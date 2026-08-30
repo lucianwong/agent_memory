@@ -14,20 +14,21 @@ python3 -m venv .venv
 
 echo "==> 2/4 初始化配置"
 if [ ! -f config.json ]; then
-  cp config.example.json config.json
-  chmod 600 config.json
-  echo "    已生成 config.json（0600）—— 请填写 bridge_token / mem0_* / llm 后继续"
+	cp config.example.json config.json
+	chmod 600 config.json
+	echo "    已生成 config.json（0600）—— 请填写 bridge_token / mem0_* / llm 后继续"
 else
-  echo "    config.json 已存在，跳过"
+	echo "    config.json 已存在，跳过"
 fi
 
 echo "==> 3/4 CLI 与 hooks"
 chmod +x cli/memory hooks/*.py
 mkdir -p ~/.local/bin logs
-ln -sf "$(pwd)/cli/memory" ~/.local/bin/memory
+ln -sf "$(pwd)/cli/mem" ~/.local/bin/mem
+ln -sf "$(pwd)/cli/mem" ~/.local/bin/memory
 case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *) echo "    提示：请把 ~/.local/bin 加入 PATH" ;;
+*":$HOME/.local/bin:"*) ;;
+*) echo "    提示：请把 ~/.local/bin 加入 PATH" ;;
 esac
 
 echo "==> 4/4 完成"
@@ -35,21 +36,27 @@ echo "    前台启动: .venv/bin/uvicorn server:app --host 127.0.0.1 --port 876
 echo "    管理台  : http://127.0.0.1:8765/"
 
 case "$MODE" in
-  --with-launchd)
-    [ "$(uname)" = "Darwin" ] || { echo "launchd 仅限 macOS"; exit 1; }
-    sed "s|__HOME__|$HOME|g" deploy/launchd.dev.agent-memory.bridge.plist.tmpl \
-      > ~/Library/LaunchAgents/dev.agent-memory.bridge.plist
-    launchctl bootout gui/$(id -u)/dev.agent-memory.bridge 2>/dev/null || true
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agent-memory.bridge.plist
-    echo "    launchd 已安装并启动（dev.agent-memory.bridge）"
-    ;;
-  --with-systemd)
-    [ "$(uname)" = "Linux" ] || { echo "systemd 仅限 Linux"; exit 1; }
-    mkdir -p ~/.config/systemd/user
-    sed "s|__HOME__|$HOME|g" deploy/agent-memory-bridge.service.tmpl \
-      > ~/.config/systemd/user/agent-memory-bridge.service
-    systemctl --user daemon-reload
-    systemctl --user enable --now agent-memory-bridge.service
-    echo "    systemd user 服务已安装并启动（loginctl enable-linger 可开机自启）"
-    ;;
+--with-launchd)
+	[ "$(uname)" = "Darwin" ] || {
+		echo "launchd 仅限 macOS"
+		exit 1
+	}
+	sed "s|__HOME__|$HOME|g" deploy/launchd.dev.agent-memory.bridge.plist.tmpl \
+		>~/Library/LaunchAgents/dev.agent-memory.bridge.plist
+	launchctl bootout gui/$(id -u)/dev.agent-memory.bridge 2>/dev/null || true
+	launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agent-memory.bridge.plist
+	echo "    launchd 已安装并启动（dev.agent-memory.bridge）"
+	;;
+--with-systemd)
+	[ "$(uname)" = "Linux" ] || {
+		echo "systemd 仅限 Linux"
+		exit 1
+	}
+	mkdir -p ~/.config/systemd/user
+	sed "s|__HOME__|$HOME|g" deploy/agent-memory-bridge.service.tmpl \
+		>~/.config/systemd/user/agent-memory-bridge.service
+	systemctl --user daemon-reload
+	systemctl --user enable --now agent-memory-bridge.service
+	echo "    systemd user 服务已安装并启动（loginctl enable-linger 可开机自启）"
+	;;
 esac

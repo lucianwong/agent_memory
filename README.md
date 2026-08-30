@@ -82,18 +82,47 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/agents/k
 
 ## 使用
 
+会话开始/结束由 hooks 全自动处理（注入记忆上下文、采集 git 变更并提取落库），
+人工只需要在终端敲几个短命令：
+
 ```bash
-memory context                 # 会话开始：拉取当前项目 + 全局记忆（hooks 已自动做）
-memory remember --type decision "决定用 Supabase Storage 存头像"
-memory search "认证方案"
-memory checkpoint              # 收尾：汇总 git 变更 + 会话产出，LLM 提取写回
-memory forget <id>
-memory forget-batch --project github.com/yves/myapp          # dry-run
-memory forget-batch --project github.com/yves/myapp --execute
+mem ctx                                    # 查看当前项目+全局记忆
+mem s "之前怎么解决 HMR 的"                 # 语义检索
+mem add "这个方案以后不要再用" -t decision   # 写入（类型：profile/project/decision/task/incident）
+mem cp                                     # 手动触发一次 checkpoint（一般不需要）
+mem rm <id>                                # 删除单条
+mem clean                                  # 语义整理：合并重复记忆（预览）
+mem clean --apply                          # 执行合并
 ```
 
 `project_id` 自动从 `git remote get-url origin` 归一化推导（worktree 共享同一项目记忆），
 无 remote 时回退 `local-<路径哈希>`。
+
+## 记忆生命周期
+
+每条记忆带 `status` 元数据：
+
+- `active`：正常参与注入与检索
+- `superseded`：被合并（`consolidate` / `mem clean --apply`）或人工替换，保留可追溯但不再出现
+- `deprecated`：人工废弃（管理台"废弃"按钮或状态接口）
+
+注入与检索默认只看 `active`；`mem s --status all` 与管理台状态筛选可查看全部；
+历史数据用 `POST /admin/backfill-status` 一次性补齐。
+
+## 并行 Agent 的 diff 归属
+
+SessionStart hook 记录会话基线（`started_at`，存于 `~/agent_memory/state/`）；
+SessionEnd 触发 checkpoint 时只统计 **mtime 晚于基线** 的变更文件 —— 其它会话或
+更早遗留的未提交改动不会被算进本次。同时段存在其它 agent 的活跃基线时，metadata
+标记 `parallel_with`，并在提取提示中要求保守归属。跨目录的真正并行建议用 git
+worktree（每个 worktree 的 diff 天然隔离，`project_id` 相同则共享项目记忆）。
+
+## 语义整理（consolidation）
+
+`POST /consolidate` 或 `mem clean`：字符二元组 containment（实测近重复对 ≈0.59，
+不同事实 ≤0.05，阈值 0.5）词法聚类找出同类型近似重复记忆 → LLM 逐组判定是否同一
+事实 → 合并为一条新记忆，旧记忆标记 `superseded` 并记录 `superseded_by`。
+默认 dry-run 预览，`--apply` / `dry_run:false` 执行。
 
 ## 配置参考（config.json）
 
@@ -120,6 +149,10 @@ memory forget-batch --project github.com/yves/myapp --execute
 | `POST /context` · `POST /search` · `POST /remember` | 记忆核心操作 |
 | `POST /checkpoint` · `GET /memories` | 会话落库 · 记忆浏览 |
 | `DELETE /memory/{id}` · `POST /forget` | 单条/批量删除（批量默认 dry-run） |
+| `POST /memory/{id}/status` | 生命周期切换（active/superseded/deprecated） |
+| `POST /consolidate` | 语义整理：聚类近重复 → LLM 合并 → 旧记忆 superseded |
+| `GET /memories` | 记忆浏览（project/type/status/关键词过滤） |
+| `POST /admin/backfill-status` | 历史记忆状态回填（一次性） |
 
 ## 安全模型
 

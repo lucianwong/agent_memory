@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
@@ -124,13 +125,48 @@ class Mem0Client:
         return [r["id"] for r in rows if isinstance(r, dict) and r.get("id")]
 
     def search(self, query: str, metadata_filters: dict | None = None,
-               top_k: int = 8) -> list[dict]:
+               top_k: int = 8, threshold: float | None = None) -> list[dict]:
         filters: dict = {"user_id": self.user_id}
         if metadata_filters:
             filters.update(metadata_filters)
-        result = self._request(
-            "POST", "/search", {"query": query, "filters": filters, "top_k": top_k})
+        body: dict = {"query": query, "filters": filters, "top_k": top_k}
+        if threshold is not None:
+            body["threshold"] = threshold
+        result = self._request("POST", "/search", body)
         return _normalize(result)
+
+    def query_all(self, metadata_filters: dict | None = None,
+                  top_k: int = 1000) -> list[dict]:
+        """按 metadata 条件服务端过滤查询（threshold=0，不做语义筛除）。"""
+        return self.search(".", metadata_filters, top_k=top_k, threshold=0.0)
+
+    def get_one(self, memory_id: str) -> dict | None:
+        try:
+            result = self._request("GET", f"/memories/{urllib.parse.quote(memory_id)}")
+        except Mem0Error:
+            return None
+        row = None
+        if isinstance(result, dict):
+            if "id" in result:
+                row = result
+            else:
+                rows = result.get("results") or []
+                row = rows[0] if rows else None
+        if not isinstance(row, dict) or not row.get("id"):
+            return None
+        return {"id": row["id"],
+                "text": row.get("memory") or row.get("data") or "",
+                "metadata": row.get("metadata") or {}}
+
+    def update_metadata(self, memory_id: str, metadata_merge: dict) -> None:
+        """合并式更新 metadata（先读全量再整体写回，兼容服务端 replace 语义）。"""
+        row = self.get_one(memory_id)
+        if row is None:
+            raise Mem0Error(f"memory {memory_id} not found for update")
+        merged = dict(row["metadata"])
+        merged.update({k: v for k, v in metadata_merge.items() if v is not None})
+        self._request("PUT", f"/memories/{urllib.parse.quote(memory_id)}",
+                      {"metadata": merged})
 
     def list_all(self) -> list[dict]:
         """拉取当前用户全部记忆（>1000 条时需改分页策略）。"""
@@ -250,6 +286,8 @@ class SearchReq(BaseModel):
     query: str
     project_id: str | None = None
     type: str | None = None
+    status: str = Field(default="active",
+                        pattern="^(active|superseded|deprecated|all)$")
     top_k: int = Field(default=8, ge=1, le=50)
 
 
@@ -263,6 +301,7 @@ class RememberReq(BaseModel):
     branch: str | None = None
     task_id: str | None = None
     tags: list[str] | None = None
+    parallel_with: list[str] | None = None
 
 
 class CheckpointReq(BaseModel):
@@ -270,6 +309,8 @@ class CheckpointReq(BaseModel):
     output_text: str = ""
     source_agent: str = "cli"
     task_id: str | None = None
+    started_at: str | None = None
+    parallel_agents: list[str] | None = None
 
 
 class ForgetReq(BaseModel):
@@ -298,19 +339,21 @@ def _remember(req: RememberReq) -> dict:
     if req.scope == "project" and not project_id and req.repo:
         project_id, _ = detect_project_id(req.repo)
     # 确定性去重：mem0 存储 embedding 含 metadata，同文本向量查询仅 ~0.5 分，
-    # 向量近重不可靠；改用 content_hash 精确匹配。
+    # 向量近重不可靠；改用服务端 content_hash 精确过滤（仅对 active 记忆判重）。
     chash = hashlib.sha256(content.encode()).hexdigest()
-    for r in client.list_all():
-        m = r["metadata"]
-        if m.get("content_hash") != chash:
-            continue
-        if m.get("scope") == "global" or m.get("project_id") == project_id:
-            return {"status": "skipped", "id": r["id"], "score": 1.0}
+    dedup_filters = {"content_hash": chash, "status": "active"}
+    if req.scope == "project" and project_id:
+        dedup_filters["project_id"] = project_id
+    if client.search(".", dedup_filters, top_k=1, threshold=0.0):
+        return {"status": "skipped",
+                "id": client.search(".", dedup_filters, top_k=1, threshold=0.0)[0]["id"],
+                "score": 1.0}
     ids = client.add(content, _meta({
-        "content_hash": chash,
+        "content_hash": chash, "status": "active",
         "type": req.type, "scope": req.scope, "project_id": project_id,
         "source_agent": req.source_agent, "repo": req.repo,
-        "branch": req.branch, "task_id": req.task_id, "tags": req.tags}))
+        "branch": req.branch, "task_id": req.task_id, "tags": req.tags,
+        "parallel_with": req.parallel_with}))
     if not ids:
         raise HTTPException(502, "mem0 add returned no id")
     return {"status": "created", "id": ids[0]}
@@ -333,6 +376,8 @@ def search(req: SearchReq, authorization: str | None = Header(None)):
         meta["project_id"] = req.project_id
     if req.type:
         meta["type"] = req.type
+    if req.status != "all":
+        meta["status"] = req.status
     try:
         hits = client.search(redact(req.query), meta or None, req.top_k)
     except Mem0Error as e:
@@ -340,6 +385,7 @@ def search(req: SearchReq, authorization: str | None = Header(None)):
     return {"results": [{
         "id": h["id"], "score": h["score"], "type": h["metadata"].get("type"),
         "project_id": h["metadata"].get("project_id"),
+        "status": h["metadata"].get("status", "active"),
         "created_at": h["created_at"], "text": h["text"],
     } for h in hits]}
 
@@ -377,29 +423,28 @@ def forget_many(req: ForgetReq, authorization: str | None = Header(None)):
 def context(req: ContextReq, authorization: str | None = Header(None)):
     _auth(authorization)
     pid = req.project_id
-    rows = client.list_all()
 
-    def pick(mtype: str, limit: int, project_scoped: bool) -> list[dict]:
-        out: list[dict] = []
-        for r in rows:
-            m = r["metadata"]
-            if m.get("type") != mtype:
-                continue
-            if project_scoped and pid and m.get("project_id") not in (pid, None):
-                continue
-            if project_scoped and not pid and m.get("scope") != "global":
-                continue
-            out.append(r)
-        out.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-        return out[:limit]
+    def fetch(mtype: str, limit: int, project_scoped: bool) -> list[dict]:
+        """按条件服务端过滤（type/status/project），阈值 0 不做语义筛除。"""
+        base = {"type": mtype, "status": "active"}
+        if project_scoped and pid:
+            rows = client.query_all({**base, "project_id": pid})
+            globals_rows = client.query_all({**base, "scope": "global"})
+            rows += [r for r in globals_rows if not r["metadata"].get("project_id")]
+        elif project_scoped:
+            rows = client.query_all({**base, "scope": "global"})
+        else:
+            rows = client.query_all(base)
+        rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        return rows[:limit]
 
     sections = []
     if pid:
-        sections.append(("# Project memory", pick("project", LIMITS["project"], True)))
-        sections.append(("# Recent decisions", pick("decision", LIMITS["decision"], True)))
-        sections.append(("# Current tasks", pick("task", LIMITS["task"], True)))
-        sections.append(("# Known issues", pick("incident", LIMITS["incident"], True)))
-    sections.append(("# User preferences", pick("profile", LIMITS["profile"], False)))
+        sections.append(("# Project memory", fetch("project", LIMITS["project"], True)))
+        sections.append(("# Recent decisions", fetch("decision", LIMITS["decision"], True)))
+        sections.append(("# Current tasks", fetch("task", LIMITS["task"], True)))
+        sections.append(("# Known issues", fetch("incident", LIMITS["incident"], True)))
+    sections.append(("# User preferences", fetch("profile", LIMITS["profile"], False)))
 
     lines = ["# Shared agent memory (auto-generated)"]
     empty = True
@@ -427,6 +472,46 @@ def _git(repo: str, *args: str, cap: int = 12000) -> str:
     return r.stdout.strip()[:cap] if r.returncode == 0 else ""
 
 
+def _changed_files(repo: str, since: float | None) -> list[str]:
+    """diff+untracked 文件列表；给了 since 则按 mtime 过滤出本会话改动的文件。"""
+    names = set(_git(repo, "diff", "HEAD", "--name-only", cap=40000).splitlines())
+    for line in _git(repo, "status", "--porcelain", cap=20000).splitlines():
+        if line.startswith("??") and len(line) > 3:
+            names.add(line[3:].strip().strip('"'))
+    names.discard("")
+    ordered = sorted(names)
+    if since is None:
+        return ordered[:200]
+    keep: list[str] = []
+    for n in ordered:
+        fp = os.path.join(repo, n)
+        try:
+            if os.path.getmtime(fp) >= since:
+                keep.append(n)
+        except OSError:
+            keep.append(n)  # 已删除/无法 stat：保留，宁多勿漏
+    return keep[:200]
+
+
+def _filtered_status(repo: str, changed: list[str]) -> str:
+    if not changed:
+        return ""
+    cset = set(changed)
+    full = _git(repo, "status", "--porcelain", cap=20000)
+    keep = [ln for ln in full.splitlines()
+            if len(ln) > 3 and ln[3:].strip().strip('"') in cset]
+    return "\n".join(keep)[:2000]
+
+
+def _parse_since(started_at: str | None) -> float | None:
+    if not started_at:
+        return None
+    try:
+        return datetime.fromisoformat(started_at.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 @app.post("/checkpoint")
 def checkpoint(req: CheckpointReq, authorization: str | None = Header(None)):
     _auth(authorization)
@@ -434,20 +519,27 @@ def checkpoint(req: CheckpointReq, authorization: str | None = Header(None)):
     if not os.path.isdir(repo):
         raise HTTPException(400, f"repo not found: {repo}")
     project_id, _origin = detect_project_id(repo)
+    since = _parse_since(req.started_at)
+    changed = _changed_files(repo, since)
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD", cap=200)
     recent = _git(repo, "log", "--oneline", "-5", cap=1000)
-    status = _git(repo, "status", "--short", cap=2000)
-    diff_stat = _git(repo, "diff", "HEAD", "--stat", cap=1500)
-    diff = _git(repo, "diff", "HEAD", cap=12000)
+    status = _filtered_status(repo, changed)
+    diff_stat = _git(repo, "diff", "HEAD", "--stat", "--", *changed, cap=1500) if changed else ""
+    diff = _git(repo, "diff", "HEAD", "--", *changed, cap=12000) if changed else ""
     output = req.output_text[:16000]
     if not output.strip() and not diff and not status:
         return {"project_id": project_id, "branch": branch, "created": [], "skipped": 0,
                 "note": "no diff and no output_text; skipped LLM extraction"}
+    parallel_note = (
+        "检测到同时段并行会话：" + ", ".join(req.parallel_agents) +
+        "。diff 可能混入其它会话的改动，只提取可明确归属的信息，不要猜测归属。"
+    ) if req.parallel_agents else "无"
 
     prompt = PROMPT_PATH.read_text().format(
         project_id=project_id, branch=branch or "?", recent=recent or "(none)",
         status=status or "(clean)", diff_stat=diff_stat or "(none)",
-        diff=diff or "(no unstaged diff)", output=output or "(none)")
+        diff=diff or "(no unstaged diff)", output=output or "(none)",
+        parallel_note=parallel_note)
 
     try:
         raw = _llm(prompt)
@@ -464,7 +556,7 @@ def checkpoint(req: CheckpointReq, authorization: str | None = Header(None)):
             r = _remember(RememberReq(
                 content=text, type=mtype, scope="project", project_id=project_id,
                 source_agent=req.source_agent, repo=repo, branch=branch or None,
-                task_id=req.task_id))
+                task_id=req.task_id, parallel_with=req.parallel_agents))
             if r["status"] == "created":
                 written.append({"id": r["id"], "type": mtype, "text": text})
             else:
@@ -542,8 +634,9 @@ def _json_hooks_load(path: Path) -> dict:
     if path.exists():
         try:
             return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            # 文件损坏时大声失败：绝不能用空配置覆盖用户已有的 hooks（如 herdr 的）
+            raise Mem0Error(f"cannot parse {path}: {e}") from e
     return {"hooks": {}}
 
 
@@ -641,7 +734,10 @@ def _apply_runtime(cfg: dict) -> None:
     global CONFIG, LIMITS, DEDUP_THRESHOLD, DS, client
     CONFIG = cfg
     LIMITS = cfg.get("context_limits", LIMITS)
-    DEDUP_THRESHOLD = float(cfg.get("dedup_threshold", 0.92))
+    try:
+        DEDUP_THRESHOLD = float(cfg.get("dedup_threshold") or 0.92)
+    except (TypeError, ValueError) as e:
+        raise RuntimeError("dedup_threshold must be a number") from e
     DS = cfg.get("llm") or cfg.get("deepseek", DS)
     client = Mem0Client(cfg["mem0_base_url"], cfg["mem0_api_key"], cfg["user_id"])
 
@@ -710,7 +806,10 @@ def wire_agent(name: str, authorization: str | None = Header(None)):
         raise HTTPException(404, "agent not found")
     if a.get("hook_type") not in PRESET_PATHS:
         raise HTTPException(400, "hook_type does not support wiring")
-    _wire(a["hook_type"], name)
+    try:
+        _wire(a["hook_type"], name)
+    except Mem0Error as e:
+        raise HTTPException(502, str(e)) from e
     return {"ok": True, "name": name, "wired": True}
 
 
@@ -721,7 +820,10 @@ def unwire_agent(name: str, authorization: str | None = Header(None)):
     if not a:
         raise HTTPException(404, "agent not found")
     if a.get("hook_type") in PRESET_PATHS:
-        _unwire(a["hook_type"], name)
+        try:
+            _unwire(a["hook_type"], name)
+        except Mem0Error as e:
+            raise HTTPException(502, str(e)) from e
     return {"ok": True, "name": name, "wired": False}
 
 
@@ -812,6 +914,7 @@ def set_limits(req: LimitsReq, authorization: str | None = Header(None)):
 def browse_memories(authorization: str | None = Header(None),
                     project_id: str | None = None,
                     type: str | None = None,
+                    status: str = "active",
                     q: str | None = None,
                     limit: int = 50):
     _auth(authorization)
@@ -819,6 +922,8 @@ def browse_memories(authorization: str | None = Header(None),
     out = []
     for r in rows:
         m = r["metadata"]
+        if status != "all" and m.get("status", "active") != status:
+            continue
         if project_id and m.get("project_id") != project_id:
             continue
         if type and m.get("type") != type:
@@ -826,7 +931,139 @@ def browse_memories(authorization: str | None = Header(None),
         if q and q.lower() not in r["text"].lower():
             continue
         out.append({"id": r["id"], "text": r["text"], "metadata": m,
+                    "status": m.get("status", "active"),
                     "created_at": r.get("created_at")})
         if len(out) >= limit:
             break
     return {"memories": out, "total_scanned": len(rows)}
+
+
+# ---------------------------------------------------------------------------
+# 生命周期（active/superseded/deprecated）+ 语义整理
+# ---------------------------------------------------------------------------
+class StatusReq(BaseModel):
+    status: str = Field(pattern="^(active|superseded|deprecated)$")
+    superseded_by: str | None = None
+
+
+@app.post("/memory/{memory_id}/status")
+def set_memory_status(memory_id: str, req: StatusReq,
+                      authorization: str | None = Header(None)):
+    """切换记忆生命周期状态；superseded 需提供 superseded_by 指向新记忆。"""
+    _auth(authorization)
+    if req.status == "superseded" and not req.superseded_by:
+        raise HTTPException(400, "superseded requires superseded_by")
+    try:
+        client.update_metadata(memory_id, {"status": req.status,
+                                           "superseded_by": req.superseded_by})
+    except Mem0Error as e:
+        raise HTTPException(502, str(e)) from e
+    return {"ok": True, "id": memory_id, "status": req.status}
+
+
+@app.post("/admin/backfill-status")
+def backfill_status(authorization: str | None = Header(None)):
+    """一次性迁移：给缺 status 的历史记忆补 status=active。"""
+    _auth(authorization)
+    rows = client.list_all()
+    n = 0
+    for r in rows:
+        if not r["metadata"].get("status"):
+            try:
+                client.update_metadata(r["id"], {"status": "active"})
+                n += 1
+            except Mem0Error:
+                continue
+    return {"ok": True, "scanned": len(rows), "backfilled": n}
+
+
+class ConsolidateReq(BaseModel):
+    project_id: str | None = None
+    threshold: float = Field(default=0.78, ge=0.5, le=0.99)
+    dry_run: bool = True
+    max_groups: int = Field(default=10, ge=1, le=50)
+    scan: int = Field(default=80, ge=10, le=300)
+
+
+@app.post("/consolidate")
+def consolidate(req: ConsolidateReq, authorization: str | None = Header(None)):
+    """语义整理：自检索聚类近似重复组，LLM 判定合并，旧记忆标记 superseded。"""
+    _auth(authorization)
+    rows = client.list_all()
+    act = [r for r in rows
+           if r["metadata"].get("status", "active") == "active"
+           and (not req.project_id or r["metadata"].get("project_id") == req.project_id)]
+    act.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    act = act[:req.scan]
+
+    parent = {r["id"]: r["id"] for r in act}
+    by_id = {r["id"]: r for r in act}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    # 词法聚类：字符二元组 containment 找候选近重复对（不用向量检索——
+    # mem0 存储 embedding 含 metadata，自检索分数失真），再由 LLM 逐组判定。
+    def bigrams(s: str) -> set[str]:
+        s = re.sub(r"\s+", "", s)
+        return {s[i:i + 2] for i in range(len(s) - 1)} or {s}
+
+    grams = {r["id"]: bigrams(r["text"]) for r in act}
+    ids = [r["id"] for r in act]
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = grams[ids[i]], grams[ids[j]]
+            if not a or not b:
+                continue
+            # containment 对中文改写句稳健：实测近重复对 ≈0.59，不同事实 ≤0.05
+            contain = len(a & b) / min(len(a), len(b))
+            if contain >= 0.5 and by_id[ids[i]]["metadata"].get("type") == \
+                    by_id[ids[j]]["metadata"].get("type"):
+                ra, rb = find(ids[i]), find(ids[j])
+                if ra != rb:
+                    parent[rb] = ra
+
+    groups: dict[str, list[dict]] = {}
+    for r in act:
+        groups.setdefault(find(r["id"]), []).append(r)
+    cands = [g for g in groups.values() if len(g) >= 2][:req.max_groups]
+
+    proposals: list[dict] = []
+    applied: list[dict] = []
+    for g in cands:
+        texts = "\n".join(f"- {x['text']}" for x in g)
+        prompt = (
+            "以下是同一项目下同类型的几条长期记忆，请判断它们是否在表达同一个事实"
+            "（重复或换一种说法）。若是，给出合并后的单句（保留最完整的信息）；"
+            "若其实是不同事实，merge 设为 false。只输出 JSON，不要解释：\n"
+            '{"merge": true, "merged": "合并后的单句", "reason": "简短理由"}\n\n'
+            + texts)
+        try:
+            verdict = json.loads(_json_block(_llm(prompt)))
+        except (Mem0LLMError, ValueError) as e:
+            proposals.append({"ids": [x["id"] for x in g], "error": str(e)[:120]})
+            continue
+        if not verdict.get("merge") or not (verdict.get("merged") or "").strip():
+            continue
+        prop = {"ids": [x["id"] for x in g], "texts": [x["text"] for x in g],
+                "merged": verdict["merged"].strip(), "reason": verdict.get("reason", "")}
+        proposals.append(prop)
+        if not req.dry_run:
+            merged_text = redact(prop["merged"])
+            m = dict(g[0]["metadata"])
+            m["consolidated"] = True
+            m["status"] = "active"
+            m["content_hash"] = hashlib.sha256(merged_text.encode()).hexdigest()
+            new_ids = client.add(merged_text, m)
+            if new_ids:
+                for x in g:
+                    client.update_metadata(x["id"], {"status": "superseded",
+                                                     "superseded_by": new_ids[0]})
+                applied.append({"new_id": new_ids[0],
+                                "superseded": [x["id"] for x in g],
+                                "merged": prop["merged"]})
+    return {"scanned": len(act), "groups_found": len(cands), "proposals": proposals,
+            "applied": applied, "dry_run": req.dry_run}

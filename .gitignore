@@ -1,6 +1,7 @@
 # 机密与运行时
 config.json
 logs/
+state/
 *.log
 
 # Python

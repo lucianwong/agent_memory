@@ -436,6 +436,15 @@
                 <option>incident</option>
               </select>
             </div>
+            <div style="max-width: 140px">
+              <label>状态</label>
+              <select id="mq-status">
+                <option value="active">active</option>
+                <option value="superseded">superseded</option>
+                <option value="deprecated">deprecated</option>
+                <option value="all">all</option>
+              </select>
+            </div>
             <div style="flex: 0 0 auto">
               <button
                 class="op primary"
@@ -448,6 +457,47 @@
           </div>
           <div id="mem-list" style="margin-top: 12px"></div>
           <div id="mem-msg" class="msg"></div>
+        </div>
+
+        <div class="card">
+          <h3>🧹 语义整理（合并重复记忆）</h3>
+          <div class="row">
+            <div>
+              <label>project_id（留空 = 全部）</label>
+              <input id="co-project" placeholder="github.com/yves/xxx" />
+            </div>
+            <div style="max-width: 140px">
+              <label>相似阈值</label>
+              <input
+                id="co-threshold"
+                type="number"
+                step="0.01"
+                min="0.5"
+                max="0.99"
+                value="0.78"
+              />
+            </div>
+            <div style="flex: 0 0 auto">
+              <button class="op" onclick="consolidate(true)" style="margin-bottom: 2px">
+                预览
+              </button>
+            </div>
+            <div style="flex: 0 0 auto">
+              <button
+                class="op danger"
+                onclick="consolidate(false)"
+                style="margin-bottom: 2px"
+              >
+                应用合并
+              </button>
+            </div>
+          </div>
+          <p class="muted">
+            词法聚类找出同类型近似重复的记忆，LLM 逐组判定并合并；被合并的旧记忆标记为
+            superseded（保留可追溯，不再出现在上下文）。
+          </p>
+          <div id="co-result" style="margin-top: 10px"></div>
+          <div id="co-msg" class="msg"></div>
         </div>
       </div>
     </div>
@@ -719,6 +769,7 @@
             q: document.getElementById("mq-q").value,
             project_id: document.getElementById("mq-project").value,
             type: document.getElementById("mq-type").value,
+            status: document.getElementById("mq-status").value,
           });
           const d = await api("/memories?" + q);
           const box = document.getElementById("mem-list");
@@ -730,20 +781,38 @@
           }
           for (const m of d.memories) {
             const div = el("div", "", "mem");
-            const del = el("button", "删除", "del");
-            del.addEventListener("click", () => delMem(m.id));
-            div.appendChild(del);
+            const st = m.status || "active";
+            const ops = el("div");
+            ops.style.cssText = "float:right;display:flex;gap:6px";
+            if (st === "active") {
+              ops.appendChild(opBtn("废弃", "danger", () => setStatus(m.id, "deprecated")));
+            } else {
+              ops.appendChild(opBtn("恢复", "", () => setStatus(m.id, "active")));
+            }
+            ops.appendChild(opBtn("删除", "del", () => delMem(m.id)));
+            div.appendChild(ops);
             const md = m.metadata || {};
             div.appendChild(
               el(
                 "div",
-                `[${md.type || "?"}] ${md.project_id || "global"} · ${md.source_agent || "?"} · ${(m.created_at || "").slice(0, 19)}`,
+                `[${st}] [${md.type || "?"}] ${md.project_id || "global"} · ${md.source_agent || "?"} · ${(m.created_at || "").slice(0, 19)}`,
                 "meta",
               ),
             );
             div.appendChild(el("div", m.text));
             box.appendChild(div);
           }
+        } catch (e) {
+          msg("mem-msg", false, e.message);
+        }
+      }
+      async function setStatus(id, status) {
+        try {
+          await api("/memory/" + id + "/status", {
+            method: "POST",
+            body: JSON.stringify({ status }),
+          });
+          loadMems();
         } catch (e) {
           msg("mem-msg", false, e.message);
         }
@@ -755,6 +824,54 @@
           loadMems();
         } catch (e) {
           msg("mem-msg", false, e.message);
+        }
+      }
+      async function consolidate(dryRun) {
+        if (
+          !dryRun &&
+          !confirm(
+            "确认执行合并？被合并的旧记忆将标记为 superseded（保留可追溯，不物理删除）。",
+          )
+        )
+          return;
+        const m = document.getElementById("co-msg");
+        m.className = "msg";
+        m.style.display = "block";
+        m.textContent = dryRun ? "分析中…（可能需要几十秒）" : "合并中…（可能需要几十秒）";
+        try {
+          const d = await api("/consolidate", {
+            method: "POST",
+            body: JSON.stringify({
+              project_id: document.getElementById("co-project").value || null,
+              threshold: parseFloat(document.getElementById("co-threshold").value) || 0.78,
+              dry_run: dryRun,
+            }),
+          });
+          m.style.display = "none";
+          const box = document.getElementById("co-result");
+          box.replaceChildren();
+          box.appendChild(
+            el(
+              "p",
+              `扫描 ${d.scanned} 条，发现 ${d.groups_found} 组候选 · ${d.dry_run ? "预览模式（不写入）" : "已应用"}`,
+              "muted",
+            ),
+          );
+          for (const p of d.proposals) {
+            if (p.error) {
+              box.appendChild(el("p", "提取失败: " + p.error, "muted"));
+              continue;
+            }
+            const item = el("div", "", "mem");
+            item.appendChild(el("div", `合并 ${p.ids.length} 条 → ${p.merged}`));
+            item.appendChild(el("div", p.reason, "meta"));
+            box.appendChild(item);
+          }
+          if (!d.proposals.length)
+            box.appendChild(el("p", "没有发现需要合并的重复记忆", "muted"));
+        } catch (e) {
+          m.className = "msg err";
+          m.textContent = e.message;
         }
       }
     </script>

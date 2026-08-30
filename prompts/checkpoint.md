@@ -23,6 +23,8 @@
 代码变更(截断):
 {diff}
 
+并行提示: {parallel_note}
+
 会话产出(截断):
 {output}
 

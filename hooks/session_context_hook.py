@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SessionStart hook：把共享记忆上下文注入 agent 启动上下文（Claude 风格 hookSpecificOutput）。
+"""SessionStart hook：注入共享记忆上下文 + 记录会话基线（供 checkpoint 归属用）。
 
 stdin: hook JSON（含 cwd 等）；stdout: additionalContext JSON。
 任何失败都静默退出（exit 0），绝不阻塞 agent 启动。
@@ -12,11 +12,13 @@ import re
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime, timezone
 
 AGENT = sys.argv[1] if len(sys.argv) > 1 else "cli"
 CONFIG_PATH = os.environ.get(
     "AGENT_MEMORY_CONFIG",
     os.path.expanduser("~/agent_memory/config.json"))
+STATE_DIR = os.path.expanduser("~/agent_memory/state")
 
 
 def project_id(path: str) -> str:
@@ -42,6 +44,22 @@ def project_id(path: str) -> str:
         return "local-" + hashlib.sha256(base.encode()).hexdigest()[:12]
 
 
+def write_state(cwd: str) -> None:
+    """记录会话基线：checkpoint 用 started_at 做 diff 归属过滤。"""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        key = hashlib.sha256(cwd.encode()).hexdigest()[:12]
+        path = os.path.join(STATE_DIR, f"{AGENT}.{key}.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"agent": AGENT, "cwd": cwd,
+                       "started_at": datetime.now(timezone.utc).isoformat(),
+                       "pid": os.getpid()}, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass  # 状态文件失败不影响注入与启动
+
+
 def main() -> None:
     try:
         raw = sys.stdin.read() or "{}"
@@ -49,6 +67,7 @@ def main() -> None:
     except Exception:
         data = {}
     cwd = data.get("cwd") or os.getcwd()
+    write_state(cwd)
 
     try:
         cfg = json.load(open(CONFIG_PATH))
@@ -63,7 +82,7 @@ def main() -> None:
         md, total = out.get("markdown", ""), out.get("total", 0)
         if md and total > 0:
             tail = ("\n\n(以上为共享记忆系统自动注入；工作中有长期有效信息用 "
-                    "`memory remember` 写入，会话结束系统自动 checkpoint)")
+                    "`mem add` 写入，会话结束系统自动 checkpoint)")
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": md + tail}}, ensure_ascii=False))

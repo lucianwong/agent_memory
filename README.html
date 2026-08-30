@@ -288,7 +288,19 @@
         <a href="#s6">6 · HTTP API</a>
         <a href="#s7">7 · 运维手册</a>
         <a href="#s8">8 · 安全边界与排错</a>
-      </nav>
+      
+    <div
+      class="callout green"
+      style="margin: 0 0 18px"
+    >
+      <b>V1.3 更新：</b>CLI 全面精简为
+      <code>mem ctx / s / add / cp / rm / clean</code>（会话开始/结束已由 hooks
+      全自动，人工只需 <code>mem add</code> / <code>mem s</code>）；记忆新增
+      active / superseded / deprecated 生命周期；checkpoint 按 SessionStart
+      基线做 diff 归属（支持并行会话）；新增语义整理 <code>mem clean</code>
+      （词法聚类 + LLM 合并，旧记忆 superseded 可追溯）；context 改为服务端条件查询。
+    </div>
+</nav>
 
       <!-- ================= 1 总览 ================= -->
       <h2 id="s1"><span class="no">01</span>系统总览</h2>
