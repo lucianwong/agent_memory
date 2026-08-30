@@ -1,0 +1,1007 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agent-memory 共享记忆系统 · 运行流程与使用方法</title>
+    <style>
+      :root {
+        --bg: #f7f8fa;
+        --card: #ffffff;
+        --ink: #1a202c;
+        --muted: #64748b;
+        --accent: #2563eb;
+        --accent-soft: #eff6ff;
+        --ok: #059669;
+        --ok-soft: #ecfdf5;
+        --warn: #d97706;
+        --warn-soft: #fffbeb;
+        --bad: #dc2626;
+        --bad-soft: #fef2f2;
+        --border: #e2e8f0;
+        --code-bg: #0f172a;
+        --code-ink: #e2e8f0;
+        --mono:
+          ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.75 -apple-system,
+          BlinkMacSystemFont,
+          "PingFang SC",
+          "Hiragino Sans GB",
+          "Microsoft YaHei",
+          sans-serif;
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 32px 24px 80px;
+      }
+      header.hero {
+        background: linear-gradient(135deg, #1e3a8a, #2563eb 55%, #0ea5e9);
+        color: #fff;
+        border-radius: 16px;
+        padding: 36px 36px 30px;
+        margin-bottom: 28px;
+      }
+      header.hero h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+        letter-spacing: 0.5px;
+      }
+      header.hero p {
+        margin: 4px 0;
+        opacity: 0.92;
+      }
+      header.hero .meta {
+        font-size: 13px;
+        opacity: 0.8;
+        margin-top: 14px;
+        font-family: var(--mono);
+      }
+      h2 {
+        font-size: 20px;
+        margin: 44px 0 14px;
+        padding-bottom: 8px;
+        border-bottom: 2px solid var(--border);
+      }
+      h2 .no {
+        color: var(--accent);
+        font-family: var(--mono);
+        margin-right: 8px;
+      }
+      h3 {
+        font-size: 16px;
+        margin: 24px 0 8px;
+      }
+      p {
+        margin: 8px 0;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 20px 22px;
+        margin: 14px 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      @media (max-width: 720px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 10px 0;
+        font-size: 14px;
+      }
+      th,
+      td {
+        border: 1px solid var(--border);
+        padding: 8px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: #f1f5f9;
+        white-space: nowrap;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 13px;
+        background: #eef2f7;
+        border-radius: 4px;
+        padding: 1px 6px;
+      }
+      pre {
+        background: var(--code-bg);
+        color: var(--code-ink);
+        border-radius: 10px;
+        padding: 14px 18px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.6;
+        margin: 10px 0;
+      }
+      pre b {
+        color: #7dd3fc;
+        font-weight: 600;
+      }
+      pre .c {
+        color: #94a3b8;
+      }
+      pre .g {
+        color: #86efac;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 12px;
+        border-radius: 20px;
+        padding: 1px 10px;
+        margin-right: 6px;
+        font-weight: 600;
+        vertical-align: 1px;
+      }
+      .tag.blue {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .tag.green {
+        background: var(--ok-soft);
+        color: var(--ok);
+      }
+      .tag.amber {
+        background: var(--warn-soft);
+        color: var(--warn);
+      }
+      .tag.red {
+        background: var(--bad-soft);
+        color: var(--bad);
+      }
+      .tag.gray {
+        background: #f1f5f9;
+        color: var(--muted);
+      }
+      .flow {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 0;
+        margin: 14px 0;
+      }
+      .flow .step {
+        flex: 1 1 150px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        position: relative;
+        min-width: 150px;
+      }
+      .flow .step .n {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .flow .step .t {
+        font-weight: 700;
+        margin: 2px 0 4px;
+      }
+      .flow .step .d {
+        font-size: 12.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .flow .arrow {
+        align-self: center;
+        color: var(--accent);
+        font-size: 20px;
+        padding: 0 6px;
+        font-weight: 700;
+      }
+      .callout {
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        border-radius: 0 10px 10px 0;
+        padding: 12px 16px;
+        margin: 14px 0;
+        font-size: 14px;
+      }
+      .callout.green {
+        border-color: var(--ok);
+        background: var(--ok-soft);
+      }
+      .callout.amber {
+        border-color: var(--warn);
+        background: var(--warn-soft);
+      }
+      .callout.red {
+        border-color: var(--bad);
+        background: var(--bad-soft);
+      }
+      .toc {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 6px 20px;
+        font-size: 14px;
+        margin: 0;
+        padding: 16px 22px;
+      }
+      .toc a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .toc a:hover {
+        text-decoration: underline;
+      }
+      footer {
+        margin-top: 48px;
+        color: var(--muted);
+        font-size: 12.5px;
+        text-align: center;
+      }
+      .kbd {
+        font-family: var(--mono);
+        font-size: 12px;
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 5px;
+        padding: 1px 6px;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="hero">
+        <h1>⧉ agent-memory 共享记忆系统</h1>
+        <p>
+          codex · zcode · kimi · pi 四工具共用一套长期记忆 ——
+          写入一次，处处可查。
+        </p>
+        <div class="meta">
+          V1.1 · 2026-08-30 · Bridge: 127.0.0.1:8765 · Mem0: oma (Tailscale
+          Serve) · user_id: beanwang · hooks 全自动
+        </div>
+      </header>
+
+      <nav class="card toc">
+        <a href="#s1">1 · 系统总览</a>
+        <a href="#s2">2 · 运行流程</a>
+        <a href="#s3">3 · 记忆分类</a>
+        <a href="#s4">4 · CLI 使用方法</a>
+        <a href="#s5">5 · 各工具接入方式</a>
+        <a href="#s6">6 · HTTP API</a>
+        <a href="#s7">7 · 运维手册</a>
+        <a href="#s8">8 · 安全边界与排错</a>
+      </nav>
+
+      <!-- ================= 1 总览 ================= -->
+      <h2 id="s1"><span class="no">01</span>系统总览</h2>
+      <div class="card">
+        <svg
+          viewBox="0 0 860 330"
+          width="100%"
+          style="max-width: 860px; display: block; margin: 0 auto"
+          font-family="-apple-system,PingFang SC,sans-serif"
+        >
+          <defs>
+            <marker
+              id="arr"
+              markerWidth="8"
+              markerHeight="8"
+              refX="6"
+              refY="3"
+              orient="auto"
+            >
+              <path d="M0,0 L6,3 L0,6 z" fill="#2563eb" />
+            </marker>
+          </defs>
+          <!-- agents -->
+          <g font-size="13" text-anchor="middle">
+            <rect
+              x="30"
+              y="30"
+              width="120"
+              height="42"
+              rx="9"
+              fill="#eff6ff"
+              stroke="#2563eb"
+            />
+            <text x="90" y="56" fill="#1e3a8a" font-weight="600">codex</text>
+            <rect
+              x="170"
+              y="30"
+              width="120"
+              height="42"
+              rx="9"
+              fill="#eff6ff"
+              stroke="#2563eb"
+            />
+            <text x="230" y="56" fill="#1e3a8a" font-weight="600">zcode</text>
+            <rect
+              x="310"
+              y="30"
+              width="120"
+              height="42"
+              rx="9"
+              fill="#eff6ff"
+              stroke="#2563eb"
+            />
+            <text x="370" y="56" fill="#1e3a8a" font-weight="600">kimi</text>
+            <rect
+              x="450"
+              y="30"
+              width="120"
+              height="42"
+              rx="9"
+              fill="#ecfdf5"
+              stroke="#059669"
+            />
+            <text x="510" y="50" fill="#065f46" font-weight="600">
+              pi（扩展直连）
+            </text>
+            <text x="510" y="65" font-size="10.5" fill="#059669">
+              pi-memory-mem0
+            </text>
+          </g>
+          <!-- CLI -->
+          <rect
+            x="130"
+            y="120"
+            width="260"
+            height="46"
+            rx="10"
+            fill="#fff"
+            stroke="#2563eb"
+            stroke-width="1.5"
+          />
+          <text
+            x="260"
+            y="140"
+            text-anchor="middle"
+            font-size="13"
+            font-weight="700"
+            fill="#1e3a8a"
+          >
+            memory CLI
+          </text>
+          <text
+            x="260"
+            y="157"
+            text-anchor="middle"
+            font-size="11"
+            fill="#64748b"
+          >
+            ~/.local/bin/memory · 纯标准库
+          </text>
+          <!-- bridge -->
+          <rect
+            x="130"
+            y="205"
+            width="260"
+            height="74"
+            rx="10"
+            fill="#1e3a8a"
+          />
+          <text
+            x="260"
+            y="228"
+            text-anchor="middle"
+            font-size="13.5"
+            font-weight="700"
+            fill="#fff"
+          >
+            Memory Bridge
+          </text>
+          <text
+            x="260"
+            y="246"
+            text-anchor="middle"
+            font-size="10.5"
+            fill="#bfdbfe"
+          >
+            FastAPI · 127.0.0.1:8765 · launchd 常驻
+          </text>
+          <text
+            x="260"
+            y="262"
+            text-anchor="middle"
+            font-size="10.5"
+            fill="#bfdbfe"
+          >
+            鉴权 · 脱敏 · project_id · content_hash 去重
+          </text>
+          <!-- mem0 -->
+          <rect
+            x="520"
+            y="205"
+            width="300"
+            height="74"
+            rx="10"
+            fill="#0f172a"
+          />
+          <text
+            x="670"
+            y="228"
+            text-anchor="middle"
+            font-size="13.5"
+            font-weight="700"
+            fill="#fff"
+          >
+            Mem0 自托管（oma）
+          </text>
+          <text
+            x="670"
+            y="246"
+            text-anchor="middle"
+            font-size="10.5"
+            fill="#94a3b8"
+          >
+            Tailscale Serve HTTPS :8443 · API Key
+          </text>
+          <text
+            x="670"
+            y="262"
+            text-anchor="middle"
+            font-size="10.5"
+            fill="#94a3b8"
+          >
+            pgvector + ollama 1024 维 + DeepSeek 提取
+          </text>
+          <!-- arrows -->
+          <line
+            x1="260"
+            y1="72"
+            x2="260"
+            y2="118"
+            stroke="#2563eb"
+            stroke-width="1.6"
+            marker-end="url(#arr)"
+          />
+          <line
+            x1="260"
+            y1="166"
+            x2="260"
+            y2="203"
+            stroke="#2563eb"
+            stroke-width="1.6"
+            marker-end="url(#arr)"
+          />
+          <line
+            x1="390"
+            y1="242"
+            x2="518"
+            y2="242"
+            stroke="#2563eb"
+            stroke-width="1.6"
+            marker-end="url(#arr)"
+          />
+          <line
+            x1="510"
+            y1="72"
+            x2="620"
+            y2="203"
+            stroke="#059669"
+            stroke-width="1.6"
+            stroke-dasharray="5 4"
+            marker-end="url(#arr)"
+          />
+          <g font-size="10.5" fill="#64748b">
+            <text x="272" y="100">shell 调用</text>
+            <text x="272" y="190">Bearer token · HTTP</text>
+            <text x="420" y="236">HTTPS + X-API-Key</text>
+            <text x="410" y="130" fill="#059669">
+              同一 user_id=beanwang → 记忆互通
+            </text>
+          </g>
+        </svg>
+      </div>
+      <div class="callout">
+        <b>核心原则：</b>Agent 只需会一套 <code>memory</code> 命令；Bridge
+        负责一切脏活（鉴权、脱敏、项目识别、去重、LLM 提取）；Mem0
+        只管存储与检索。任何一层都可独立替换。
+      </div>
+
+      <!-- ================= 2 流程 ================= -->
+      <h2 id="s2"><span class="no">02</span>运行流程</h2>
+
+      <h3>场景 A · 一次典型的 agent 会话</h3>
+      <div class="flow">
+        <div class="step">
+          <div class="n">STEP 1</div>
+          <div class="t">会话开始</div>
+          <div class="d">
+            agent 按全局 AGENTS.md 指令运行 <code>memory context</code>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="step">
+          <div class="n">STEP 2</div>
+          <div class="t">注入上下文</div>
+          <div class="d">
+            Bridge 识别当前项目 → 拉取偏好/知识/决策/任务/坑 → markdown 输出
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="step">
+          <div class="n">STEP 3</div>
+          <div class="t">工作中写入</div>
+          <div class="d">
+            产生决策/踩坑时 <code>memory remember</code>，脱敏+去重后实时入库
+          </div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="step">
+          <div class="n">STEP 4</div>
+          <div class="t">会话收尾</div>
+          <div class="d">
+            <code>memory checkpoint</code> 采集 git+产出，LLM 提取批量写回
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top: 0">checkpoint 内部流水线</h3>
+        <pre>
+git 采集                          会话产出
+├─ branch / log -5               (agent 最终输出文件)
+├─ status --short                      │
+├─ diff HEAD --stat                    │
+└─ diff HEAD (≤12KB)                   │
+        └──────────┬───────────────────┘
+                   ▼
+        DeepSeek deepseek-chat 提取
+   输出 JSON: decisions / incidents
+             / completed / next_steps / profile
+                   ▼
+        逐条 脱敏 → content_hash 去重 → Mem0
+        (metadata: type + project_id + source_agent)
+</pre>
+      </div>
+
+      <div class="callout green">
+        <b>跨工具共享的实现：</b>所有记忆存同一个
+        <code>user_id=beanwang</code> 下，检索默认不按 agent 隔离。
+        <code>source_agent</code> 只标记"谁写的"。实测：codex（经 Bridge）写入 →
+        pi（经扩展）立即可检索。
+      </div>
+
+      <h3>场景 B · 数据的去与回</h3>
+      <table>
+        <tr>
+          <th style="width: 110px">操作</th>
+          <th>链路</th>
+        </tr>
+        <tr>
+          <td><b>写入</b></td>
+          <td>
+            CLI → Bridge（脱敏 → hash 去重 → 加 metadata）→ Mem0
+            <code>POST /memories</code>（infer:false 原文存储）→ ollama 向量化 →
+            pgvector
+          </td>
+        </tr>
+        <tr>
+          <td><b>语义检索</b></td>
+          <td>
+            CLI → Bridge → Mem0 <code>POST /search</code>（filters: user_id +
+            project_id/type）→ pgvector 向量相似 → 按 score 排序返回
+          </td>
+        </tr>
+        <tr>
+          <td><b>组装上下文</b></td>
+          <td>
+            Bridge <code>GET /memories</code> 全量拉取 → 按 type/scope/project
+            客户端过滤 → 按时间排序 → 截断（5/10/10/5/5）→ markdown
+          </td>
+        </tr>
+        <tr>
+          <td><b>删除</b></td>
+          <td>
+            单条 <code>DELETE /memory/{id}</code>；批量
+            <code>POST /forget</code>（默认 dry-run，须显式
+            <code>--execute</code>）
+          </td>
+        </tr>
+      </table>
+
+      <div class="callout amber">
+        <b>为什么去重不用向量相似度：</b>实测同一文本作为查询仅得 ~0.5 分（Mem0
+        存储 embedding 时混入了 metadata），
+        语义阈值无法可靠区分"重复"与"相似但不同"。因此 Bridge 在 metadata 里存
+        <code>content_hash</code>（sha256）， 写入前精确匹配 —— 同 scope
+        同项目下逐字重复必定拦截，改写过的重复留给人工
+        <code>forget</code> 或未来 V5 consolidation。
+      </div>
+
+      <!-- ================= 3 分类 ================= -->
+      <h2 id="s3"><span class="no">03</span>记忆分类（--type）</h2>
+      <div class="card">
+        <table>
+          <tr>
+            <th style="width: 100px">type</th>
+            <th>用途</th>
+            <th>典型示例</th>
+            <th>context 配额</th>
+          </tr>
+          <tr>
+            <td><span class="tag blue">profile</span></td>
+            <td>用户长期偏好（通常 --scope global）</td>
+            <td>"偏好 pnpm 与 TypeScript strict mode"</td>
+            <td>5 条</td>
+          </tr>
+          <tr>
+            <td><span class="tag gray">project</span></td>
+            <td>项目长期知识</td>
+            <td>"API 位于 apps/api，ORM 用 Drizzle"</td>
+            <td>10 条</td>
+          </tr>
+          <tr>
+            <td><span class="tag green">decision</span></td>
+            <td>架构/技术决策，须含结论与原因</td>
+            <td>"不再引入 Redis session，Supabase JWT 已够用"</td>
+            <td>10 条</td>
+          </tr>
+          <tr>
+            <td><span class="tag amber">task</span></td>
+            <td>进行中/已完成的工作状态</td>
+            <td>"前端上传进度条未完成"</td>
+            <td>5 条</td>
+          </tr>
+          <tr>
+            <td><span class="tag red">incident</span></td>
+            <td>踩坑：现象+原因+解决</td>
+            <td>"Vite HMR 在 Tailscale 下失败，server.host=true 解决"</td>
+            <td>5 条</td>
+          </tr>
+        </table>
+        <p style="color: var(--muted); font-size: 13px">
+          每条记忆自动附带 metadata：<code
+            >schema_version / scope / project_id / source_agent / source_system
+            / content_hash / branch / task_id / tags</code
+          >
+        </p>
+      </div>
+
+      <!-- ================= 4 CLI ================= -->
+      <h2 id="s4"><span class="no">04</span>CLI 使用方法</h2>
+      <div class="card">
+        <pre><span class="c"># ① 会话开始 —— 拉取当前项目+全局记忆（在任意 git 仓库内自动识别项目）</span>
+<b>memory context</b>
+<b>memory context</b> --project github.com/yves/myapp   <span class="c"># 手动指定项目</span>
+<b>memory context</b> --global-only                     <span class="c"># 只要用户偏好</span>
+
+<span class="c"># ② 语义检索</span>
+<b>memory search</b> <span class="g">"项目用什么认证方案"</span>
+<b>memory search</b> <span class="g">"上传相关踩坑"</span> --type incident --top-k 5
+
+<span class="c"># ③ 写入（类型默认 decision；项目自动从 cwd 推导）</span>
+<b>memory remember</b> <span class="g">"决定用 Supabase Storage 存头像，不落本地盘"</span>
+<b>memory remember</b> <span class="g">"用户偏好 pnpm"</span> --type profile --scope global
+AGENT_NAME=codex <b>memory remember</b> <span class="g">"..."</span>          <span class="c"># 标记来源 agent</span>
+
+<span class="c"># ④ 会话收尾 —— 自动汇总 git 变更 + 产出文件，LLM 提取后写入</span>
+<b>memory checkpoint</b>
+<b>memory checkpoint</b> --repo ~/code/myapp --output-file /tmp/result.txt --agent codex
+
+<span class="c"># ⑤ 修正记忆</span>
+<b>memory forget</b> 4bb45fcf-c5f3-4f75-860f-0dbebe8c2c07
+<b>memory forget-batch</b> --project github.com/yves/myapp              <span class="c"># dry-run 预览</span>
+<b>memory forget-batch</b> --project github.com/yves/myapp --execute    <span class="c"># 真删</span></pre>
+      </div>
+
+      <div class="callout">
+        <b>project_id 规则：</b>取
+        <code>git remote get-url origin</code> 归一化（<code
+          >git@github.com:yves/x.git → github.com/yves/x</code
+        >）。 多 worktree 共享同一项目记忆；无 remote 的仓库回退
+        <code>local-&lt;路径哈希&gt;</code>。
+      </div>
+
+      <!-- ================= 5 接入 ================= -->
+      <h2 id="s5"><span class="no">05</span>各工具接入方式</h2>
+      <div class="card">
+        <table>
+          <tr>
+            <th style="width: 90px">工具</th>
+            <th>接入点</th>
+            <th>记忆通道</th>
+            <th>说明</th>
+          </tr>
+          <tr>
+            <td><b>codex</b></td>
+            <td><code>~/.codex/AGENTS.md</code>（全局）</td>
+            <td>memory CLI → Bridge</td>
+            <td>agent 会按指令在会话开始/收尾调用</td>
+          </tr>
+          <tr>
+            <td><b>zcode</b></td>
+            <td><code>~/.zcode/AGENTS.md</code>（全局）</td>
+            <td>memory CLI → Bridge</td>
+            <td>同上</td>
+          </tr>
+          <tr>
+            <td><b>kimi</b></td>
+            <td><code>~/.kimi-code/AGENTS.md</code>（全局）</td>
+            <td>memory CLI → Bridge</td>
+            <td>
+              另有 hooks 体系（<code>[[hooks]]</code>）可做 V3 自动 checkpoint
+            </td>
+          </tr>
+          <tr>
+            <td><b>pi</b></td>
+            <td><code>pi-memory-mem0</code> 扩展</td>
+            <td>扩展直连 Mem0（不经 Bridge）</td>
+            <td>
+              active 模式自动捕获+召回；与 Bridge 共享同一 user_id，记忆互通
+            </td>
+          </tr>
+        </table>
+        <p>
+          原始文件均有
+          <code>*.bak-mem0</code> 备份；指令仅作后备说明，主链路已由 hooks
+          机制化（见下）。
+        </p>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top: 0">⚡ 全自动 hooks（V1.1 已验证）</h3>
+        <table>
+          <tr>
+            <th style="width: 90px">工具</th>
+            <th>SessionStart（自动注入）</th>
+            <th>SessionEnd（自动 checkpoint）</th>
+          </tr>
+          <tr>
+            <td><b>codex</b></td>
+            <td>
+              <code>~/.codex/hooks.json</code> →
+              <code>session_context_hook.py codex</code>，经
+              <code>hookSpecificOutput.additionalContext</code> 注入
+            </td>
+            <td>
+              <code>session_end_hook.py codex</code>
+              异步触发（detached，不阻塞退出）
+            </td>
+          </tr>
+          <tr>
+            <td><b>kimi</b></td>
+            <td>
+              <code>~/.kimi-code/config.toml</code>
+              <code>[[hooks]] event=SessionStart</code>
+            </td>
+            <td><code>[[hooks]] event=SessionEnd</code> 同上</td>
+          </tr>
+          <tr>
+            <td><b>pi</b></td>
+            <td colspan="2">pi-memory-mem0 扩展本就全自动（捕获+召回）</td>
+          </tr>
+          <tr>
+            <td><b>zcode</b></td>
+            <td colspan="2">
+              暂无 hook 机制，靠 AGENTS.md 指令（其余三者已机制化）
+            </td>
+          </tr>
+        </table>
+        <p>
+          <b>行为：</b>会话打开→记忆自动注入上下文（codex TUI 显示 “SessionStart
+          hook (completed)”）；会话关闭→后台自动汇总 git 变更与 transcript
+          产出，DeepSeek 提取写回。空会话守卫：无 diff 且无产出时不调
+          LLM；content_hash 去重防止重复触发造成冗余。
+        </p>
+        <div class="callout amber" style="margin-bottom: 0">
+          <b>注意：</b>① codex 首次加载新 hooks 会弹一次 “Hooks need review”
+          信任门，选 <b>Trust all and continue</b>
+          即可（之后不再弹）；② codex 将 SessionEnd timeout 钉到 3s——hook
+          本身秒退（checkpoint 后台异步），无影响；③ kimi
+          接入同源协议，因当月配额耗尽未实测，下周期自动生效。
+        </div>
+      </div>
+
+      <!-- ================= 6 API ================= -->
+      <h2 id="s6"><span class="no">06</span>HTTP API（Bridge）</h2>
+      <div class="card">
+        <p>
+          基址 <code>http://127.0.0.1:8765</code>，所有端点（除 /health）要求
+          <code>Authorization: Bearer &lt;bridge_token&gt;</code>（token 在
+          <code>config.json</code>）。
+        </p>
+        <table>
+          <tr>
+            <th style="width: 230px">端点</th>
+            <th>说明</th>
+          </tr>
+          <tr>
+            <td><code>GET /health</code></td>
+            <td>健康检查，无需鉴权</td>
+          </tr>
+          <tr>
+            <td><code>POST /context</code></td>
+            <td><code>{"project_id"}</code> → markdown 上下文 + total</td>
+          </tr>
+          <tr>
+            <td><code>POST /search</code></td>
+            <td>
+              <code>{"query","project_id?","type?","top_k?"}</code> →
+              结果列表（含 score）
+            </td>
+          </tr>
+          <tr>
+            <td><code>POST /remember</code></td>
+            <td>
+              <code
+                >{"content","type","scope","project_id?","source_agent"}</code
+              >
+              → created/skipped + id
+            </td>
+          </tr>
+          <tr>
+            <td><code>POST /checkpoint</code></td>
+            <td>
+              <code>{"repo_path","output_text?","source_agent?"}</code> → LLM
+              提取并写入，返回 created 列表
+            </td>
+          </tr>
+          <tr>
+            <td><code>DELETE /memory/{id}</code></td>
+            <td>删除单条</td>
+          </tr>
+          <tr>
+            <td><code>POST /forget</code></td>
+            <td>
+              <code>{"project_id?","type?","source_agent?","dry_run"}</code> →
+              批量删除（至少一个过滤条件）
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- ================= 7 运维 ================= -->
+      <h2 id="s7"><span class="no">07</span>运维手册</h2>
+      <div class="grid">
+        <div class="card">
+          <h3 style="margin-top: 0">服务管理（launchd）</h3>
+          <pre>
+# 状态 / 重启
+launchctl print gui/$(id -u)/com.yves.agent-memory-bridge
+launchctl kickstart -k gui/$(id -u)/com.yves.agent-memory-bridge
+
+# 日志
+tail -f ~/agent_memory/logs/bridge.err.log
+
+# 健康检查
+curl --noproxy '*' http://127.0.0.1:8765/health</pre>
+        </div>
+        <div class="card">
+          <h3 style="margin-top: 0">文件布局</h3>
+          <pre>~/agent_memory/
+├── bridge/server.py    <span class="c"># 单文件服务</span>
+├── cli/memory          <span class="c"># CLI（软链到 ~/.local/bin）</span>
+├── prompts/checkpoint.md
+├── config.json         <span class="c"># 0600，含全部密钥</span>
+└── logs/</pre>
+          <p style="font-size: 13px; color: var(--muted)">
+            改 server.py 后 <code>kickstart -k</code> 即生效；Bridge
+            无状态，可随时重建（记忆都在 Mem0）。
+          </p>
+        </div>
+      </div>
+      <div class="callout">
+        <b>与 Mem0 备份的关系：</b>记忆数据由 oma 侧既有体系保护——systemd timer
+        <code>mem0-backup</code> 每 6 小时快照（pg_dumpall + 定制 dump + SHA256
+        校验）+ restic 加密异机至 Mac；恢复演练脚本
+        <code>~/services/mem0/restore-drill.sh</code>。Bridge
+        自身无状态，无需备份；<code>config.json</code> 含密钥，已随 0600
+        权限保护，如需备份请手动加密存放。
+      </div>
+
+      <!-- ================= 8 安全与排错 ================= -->
+      <h2 id="s8"><span class="no">08</span>安全边界与排错</h2>
+      <div class="card">
+        <h3 style="margin-top: 0">安全设计</h3>
+        <table>
+          <tr>
+            <th style="width: 170px">层</th>
+            <th>措施</th>
+          </tr>
+          <tr>
+            <td>网络</td>
+            <td>
+              Bridge 仅绑定 <code>127.0.0.1</code>；跨设备访问 Mem0 只走
+              Tailscale Serve（Tailnet 内可达）
+            </td>
+          </tr>
+          <tr>
+            <td>鉴权</td>
+            <td>
+              CLI→Bridge：Bearer token（常数时间比较）；Bridge→Mem0：独立 API
+              key <code>mac-bridge</code>，可单独吊销
+            </td>
+          </tr>
+          <tr>
+            <td>脱敏</td>
+            <td>
+              写入前自动擦除：私钥块 / Bearer token / api_key=... / sk-ghp-xox
+              令牌 / AKIA / JWT / URL 内嵌凭证
+            </td>
+          </tr>
+          <tr>
+            <td>误删防护</td>
+            <td>
+              批量删除强制 dry-run 默认 + 至少一个过滤条件；单条删除需显式 id
+            </td>
+          </tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3 style="margin-top: 0">常见问题</h3>
+        <table>
+          <tr>
+            <th style="width: 250px">现象</th>
+            <th>处理</th>
+          </tr>
+          <tr>
+            <td>CLI 报 <code>bridge unreachable</code></td>
+            <td>
+              服务没起来：<code
+                >launchctl kickstart gui/$(id
+                -u)/com.yves.agent-memory-bridge</code
+              >，再看 err.log
+            </td>
+          </tr>
+          <tr>
+            <td>remember/search 报 502</td>
+            <td>
+              Mem0 侧故障：查 <code>oma:~/services/mem0</code> 容器状态；确认
+              Mac 能
+              <code
+                >curl --noproxy '*'
+                https://omarchy.tail11e709.ts.net:8443/auth/setup-status</code
+              >
+            </td>
+          </tr>
+          <tr>
+            <td>记忆写进了错误项目</td>
+            <td>
+              确认 cwd 的 <code>git remote get-url origin</code>；或显式
+              <code>--project</code>；错的可 forget 后重写
+            </td>
+          </tr>
+          <tr>
+            <td>疑似记忆被污染</td>
+            <td>
+              <code>memory forget-batch --project X</code> 先 dry-run 核对 id
+              列表，确认后 <code>--execute</code>
+            </td>
+          </tr>
+          <tr>
+            <td>怀疑 token 泄漏</td>
+            <td>
+              换 <code>config.json</code> 里 bridge_token 并重启 Bridge；吊销
+              mac-bridge key 换新
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <footer>
+        agent-memory V1 · Bridge 127.0.0.1:8765 · Mem0 @ oma · 2026-08-30<br />
+        数据面：记忆存 Mem0（有备份有演练）· Bridge 无状态 · CLI 零依赖
+      </footer>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+# 机密与运行时
+config.json
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 系统
+.DS_Store
+*.tmp

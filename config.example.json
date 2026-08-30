@@ -1,0 +1,26 @@
+{
+  "bridge_url": "http://127.0.0.1:8765",
+  "bridge_token": "请替换为 openssl rand -base64 32 的输出",
+  "mem0_base_url": "https://your-mem0-host.ts.net:8443",
+  "mem0_api_key": "m0sk_your_mem0_api_key",
+  "user_id": "your-user-id",
+  "dedup_threshold": 0.92,
+  "context_limits": {
+    "profile": 5,
+    "project": 10,
+    "decision": 10,
+    "task": 5,
+    "incident": 5
+  },
+  "llm": {
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "api_key": "sk-your-llm-api-key"
+  },
+  "agents": {
+    "codex": { "enabled": true, "hook_type": "codex" },
+    "kimi": { "enabled": true, "hook_type": "kimi" },
+    "pi": { "enabled": true, "hook_type": "none" },
+    "zcode": { "enabled": true, "hook_type": "none" }
+  }
+}

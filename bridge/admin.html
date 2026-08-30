@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agent-memory 管理台</title>
+    <style>
+      :root {
+        --bg: #f7f8fa;
+        --card: #fff;
+        --ink: #1a202c;
+        --muted: #64748b;
+        --accent: #2563eb;
+        --accent-soft: #eff6ff;
+        --ok: #059669;
+        --ok-soft: #ecfdf5;
+        --bad: #dc2626;
+        --bad-soft: #fef2f2;
+        --border: #e2e8f0;
+        --mono: ui-monospace, Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.7 -apple-system,
+          BlinkMacSystemFont,
+          "PingFang SC",
+          "Microsoft YaHei",
+          sans-serif;
+      }
+      .wrap {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 24px 20px 60px;
+      }
+      header {
+        background: linear-gradient(135deg, #1e3a8a, #2563eb 60%, #0ea5e9);
+        color: #fff;
+        border-radius: 14px;
+        padding: 22px 26px;
+        margin-bottom: 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 19px;
+      }
+      header .sub {
+        opacity: 0.85;
+        font-size: 12.5px;
+        font-family: var(--mono);
+      }
+      .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #fca5a5;
+        margin-right: 6px;
+      }
+      .dot.on {
+        background: #6ee7b7;
+      }
+      nav {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      nav button {
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 9px;
+        padding: 8px 18px;
+        cursor: pointer;
+        font-size: 14px;
+        color: var(--ink);
+      }
+      nav button.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin-bottom: 14px;
+      }
+      .card h3 {
+        margin: 0 0 12px;
+        font-size: 15px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--border);
+        padding: 8px 10px;
+        text-align: left;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      input,
+      select {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 13.5px;
+        font-family: inherit;
+        background: #fff;
+        color: var(--ink);
+        width: 100%;
+      }
+      input:focus,
+      select:focus {
+        outline: 2px solid var(--accent-soft);
+        border-color: var(--accent);
+      }
+      label {
+        display: block;
+        font-size: 12.5px;
+        color: var(--muted);
+        margin: 10px 0 4px;
+      }
+      button.op {
+        border: 1px solid var(--border);
+        background: #fff;
+        border-radius: 8px;
+        padding: 6px 14px;
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--ink);
+      }
+      button.op:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      button.op.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button.op.danger {
+        color: var(--bad);
+        border-color: #fecaca;
+      }
+      button.op:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 11.5px;
+        border-radius: 14px;
+        padding: 1px 10px;
+        font-weight: 600;
+      }
+      .badge.ok {
+        background: var(--ok-soft);
+        color: var(--ok);
+      }
+      .badge.off {
+        background: #f1f5f9;
+        color: var(--muted);
+      }
+      .badge.bad {
+        background: var(--bad-soft);
+        color: var(--bad);
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: end;
+        flex-wrap: wrap;
+      }
+      .row > div {
+        flex: 1;
+        min-width: 160px;
+      }
+      .msg {
+        font-size: 13px;
+        margin-top: 10px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        display: none;
+      }
+      .msg.ok {
+        background: var(--ok-soft);
+        color: var(--ok);
+        display: block;
+      }
+      .msg.err {
+        background: var(--bad-soft);
+        color: var(--bad);
+        display: block;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+      .mem {
+        border-bottom: 1px solid var(--border);
+        padding: 9px 4px;
+      }
+      .mem .meta {
+        font-size: 11.5px;
+        color: var(--muted);
+        font-family: var(--mono);
+      }
+      .mem .del {
+        float: right;
+        border: none;
+        background: none;
+        color: var(--bad);
+        cursor: pointer;
+        font-size: 12px;
+      }
+      #gate {
+        position: fixed;
+        inset: 0;
+        background: #0f172acc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9;
+      }
+      #gate .box {
+        background: #fff;
+        border-radius: 14px;
+        padding: 30px 34px;
+        width: 360px;
+      }
+      .hide {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="gate">
+      <div class="box">
+        <h3 style="margin: 0 0 6px">🔐 agent-memory 管理台</h3>
+        <p class="muted" style="margin: 0 0 12px">
+          输入 Bridge Token（config.json 中的 bridge_token）
+        </p>
+        <input id="gate-token" type="password" placeholder="bridge token" />
+        <button
+          class="op primary"
+          style="width: 100%; margin-top: 12px"
+          onclick="login()"
+        >
+          进入
+        </button>
+        <div id="gate-msg" class="msg"></div>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <header>
+        <div>
+          <h1>⧉ agent-memory 管理台</h1>
+          <div class="sub" id="hd-sub">Bridge 127.0.0.1:8765</div>
+        </div>
+        <div style="text-align: right">
+          <span class="dot" id="hd-dot"></span
+          ><span id="hd-status" style="font-size: 13px">连接中…</span>
+          <div class="sub" id="hd-user"></div>
+        </div>
+      </header>
+
+      <nav>
+        <button class="active" data-tab="agents" onclick="tab('agents', this)">
+          🔌 Agent 接入
+        </button>
+        <button data-tab="llm" onclick="tab('llm', this)">🧠 模型配置</button>
+        <button data-tab="mems" onclick="tab('mems', this)">🗂 记忆管理</button>
+      </nav>
+
+      <!-- ============ Agent 接入 ============ -->
+      <div id="tab-agents">
+        <div class="card">
+          <h3>已注册的 Agent</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>hook 类型</th>
+                <th>接线状态</th>
+                <th>启用</th>
+                <th style="width: 230px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="agent-rows"></tbody>
+          </table>
+          <p class="muted">
+            接线 = 把 SessionStart/SessionEnd hook 写入对应工具的全局配置；移除
+            = 从其配置中摘除（均有 .bak-agent-memory 备份）。codex/kimi/claude
+            支持自动接线；none 类型仅注册（靠 AGENTS.md 指令或扩展）。
+          </p>
+        </div>
+        <div class="card">
+          <h3>接入新 Agent</h3>
+          <div class="row">
+            <div>
+              <label>名称（小写字母/数字/-/_）</label
+              ><input id="na-name" placeholder="例如 claude、qwen-cli" />
+            </div>
+            <div>
+              <label>hook 类型</label>
+              <select id="na-type">
+                <option value="none">none（仅注册，不写 hook）</option>
+                <option value="codex">codex（hooks.json，Claude 风格）</option>
+                <option value="kimi">kimi（config.toml [[hooks]]）</option>
+                <option value="claude">claude（settings.json hooks）</option>
+              </select>
+            </div>
+            <div style="flex: 0 0 auto">
+              <button class="op primary" onclick="addAgent()">接入</button>
+            </div>
+          </div>
+          <div id="na-msg" class="msg"></div>
+        </div>
+      </div>
+
+      <!-- ============ 模型配置 ============ -->
+      <div id="tab-llm" class="hide">
+        <div class="card">
+          <h3>Checkpoint 提取模型（LLM）</h3>
+          <label>Base URL（OpenAI 兼容）</label
+          ><input id="ll-base" placeholder="https://api.deepseek.com/v1" />
+          <label>模型名</label
+          ><input id="ll-model" placeholder="deepseek-chat" />
+          <label>API Key（留空 = 保留已存密钥）</label
+          ><input id="ll-key" type="password" autocomplete="off" />
+          <div class="row" style="margin-top: 14px">
+            <div style="flex: 0 0 auto">
+              <button class="op primary" onclick="saveLlm()">保存</button>
+            </div>
+            <div style="flex: 0 0 auto">
+              <button class="op" onclick="testLlm()">测试连通</button>
+            </div>
+            <div style="flex: 2">
+              <span class="muted" id="ll-masked"></span>
+            </div>
+          </div>
+          <div id="ll-msg" class="msg"></div>
+        </div>
+        <div class="card">
+          <h3>检索与去重参数</h3>
+          <div class="row">
+            <div>
+              <label
+                >去重阈值（content_hash
+                精确去重，此值保留给未来语义去重）</label
+              ><input
+                id="lm-dedup"
+                type="number"
+                step="0.01"
+                min="0.5"
+                max="1"
+              />
+            </div>
+            <div>
+              <label>profile 上限</label
+              ><input id="lm-profile" type="number" min="1" max="50" />
+            </div>
+            <div>
+              <label>project 上限</label
+              ><input id="lm-project" type="number" min="1" max="50" />
+            </div>
+            <div>
+              <label>decision 上限</label
+              ><input id="lm-decision" type="number" min="1" max="50" />
+            </div>
+          </div>
+          <div class="row" style="margin-top: 12px">
+            <div>
+              <label>task 上限</label
+              ><input id="lm-task" type="number" min="1" max="50" />
+            </div>
+            <div>
+              <label>incident 上限</label
+              ><input id="lm-incident" type="number" min="1" max="50" />
+            </div>
+            <div style="flex: 0 0 auto">
+              <button
+                class="op primary"
+                onclick="saveLimits()"
+                style="margin-bottom: 2px"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+          <div id="lm-msg" class="msg"></div>
+        </div>
+      </div>
+
+      <!-- ============ 记忆管理 ============ -->
+      <div id="tab-mems" class="hide">
+        <div class="card">
+          <h3>检索</h3>
+          <div class="row">
+            <div>
+              <label>关键词</label
+              ><input id="mq-q" placeholder="标题/内容包含…" />
+            </div>
+            <div>
+              <label>project_id</label
+              ><input id="mq-project" placeholder="github.com/yves/xxx" />
+            </div>
+            <div style="max-width: 150px">
+              <label>type</label>
+              <select id="mq-type">
+                <option value="">全部</option>
+                <option>profile</option>
+                <option>project</option>
+                <option>decision</option>
+                <option>task</option>
+                <option>incident</option>
+              </select>
+            </div>
+            <div style="flex: 0 0 auto">
+              <button
+                class="op primary"
+                onclick="loadMems()"
+                style="margin-bottom: 2px"
+              >
+                查询
+              </button>
+            </div>
+          </div>
+          <div id="mem-list" style="margin-top: 12px"></div>
+          <div id="mem-msg" class="msg"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const TOKEN_KEY = "am_bridge_token";
+      let token = localStorage.getItem(TOKEN_KEY) || "";
+      if (token) hideGate();
+
+      function hideGate() {
+        document.getElementById("gate").classList.add("hide");
+        boot();
+      }
+      function login() {
+        const v = document.getElementById("gate-token").value.trim();
+        if (!v) return;
+        token = v;
+        localStorage.setItem(TOKEN_KEY, v);
+        hideGate();
+      }
+      async function api(path, opts = {}) {
+        const r = await fetch(path, {
+          ...opts,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + token,
+            ...(opts.headers || {}),
+          },
+        });
+        if (r.status === 401) {
+          localStorage.removeItem(TOKEN_KEY);
+          token = "";
+          document.getElementById("gate").classList.remove("hide");
+          throw new Error("未授权");
+        }
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.detail || JSON.stringify(d).slice(0, 200));
+        return d;
+      }
+      function msg(id, ok, text) {
+        const e = document.getElementById(id);
+        e.className = "msg " + (ok ? "ok" : "err");
+        e.textContent = text;
+        setTimeout(() => {
+          e.className = "msg";
+        }, 6000);
+      }
+
+      function tab(name, btn) {
+        document
+          .querySelectorAll("nav button")
+          .forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        ["agents", "llm", "mems"].forEach((t) =>
+          document
+            .getElementById("tab-" + t)
+            .classList.toggle("hide", t !== name),
+        );
+        if (name === "agents") loadAgents();
+        if (name === "llm") loadConfig();
+        if (name === "mems") loadMems();
+      }
+
+      async function boot() {
+        try {
+          const h = await api("/health");
+          document.getElementById("hd-dot").classList.add("on");
+          document.getElementById("hd-status").textContent = "Bridge 运行中";
+          document.getElementById("hd-user").textContent =
+            "user_id: " + h.user_id;
+          loadAgents();
+        } catch (e) {
+          document.getElementById("hd-status").textContent =
+            "未连接：" + e.message;
+        }
+      }
+
+      /* ---- DOM 助手（避免 innerHTML，记忆文本属不可信内容）---- */
+      function el(tag, text, cls) {
+        const e = document.createElement(tag);
+        if (text !== undefined) e.textContent = text;
+        if (cls) e.className = cls;
+        return e;
+      }
+      function badge(text, cls) {
+        return el("span", text, "badge " + cls);
+      }
+      function opBtn(label, cls, fn) {
+        const b = el("button", label, "op" + (cls ? " " + cls : ""));
+        b.addEventListener("click", fn);
+        return b;
+      }
+
+      /* ---- agents ---- */
+      async function loadAgents() {
+        try {
+          const d = await api("/agents");
+          const tb = document.getElementById("agent-rows");
+          tb.replaceChildren();
+          for (const a of d.agents) {
+            const tr = document.createElement("tr");
+            const nameTd = el("td", a.name);
+            nameTd.style.fontWeight = "700";
+            tr.appendChild(nameTd);
+            tr.appendChild(el("td", a.hook_type));
+            const tdW = document.createElement("td");
+            tdW.appendChild(
+              a.wired === null
+                ? badge("n/a", "off")
+                : badge(a.wired ? "已接线" : "未接线", a.wired ? "ok" : "off"),
+            );
+            tr.appendChild(tdW);
+            const tdE = document.createElement("td");
+            tdE.appendChild(
+              badge(a.enabled ? "启用" : "停用", a.enabled ? "ok" : "off"),
+            );
+            tr.appendChild(tdE);
+            const tdO = document.createElement("td");
+            if (a.hook_type !== "none")
+              tdO.appendChild(
+                opBtn(a.wired ? "移除接线" : "接入", "", () =>
+                  doWire(a.name, !a.wired),
+                ),
+              );
+            tdO.appendChild(opBtn("移除", "danger", () => delAgent(a.name)));
+            tr.appendChild(tdO);
+            tb.appendChild(tr);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      async function doWire(name, wire) {
+        try {
+          await api(`/agents/${name}/${wire ? "wire" : "unwire"}`, {
+            method: "POST",
+          });
+          msg("na-msg", true, (wire ? "已接入 " : "已移除 ") + name);
+          loadAgents();
+        } catch (e) {
+          msg("na-msg", false, e.message);
+        }
+      }
+      async function delAgent(name) {
+        if (
+          !confirm(
+            `移除 agent「${name}」？已接线的话会同时从工具配置中摘除 hook。`,
+          )
+        )
+          return;
+        try {
+          await api("/agents/" + name, { method: "DELETE" });
+          loadAgents();
+        } catch (e) {
+          msg("na-msg", false, e.message);
+        }
+      }
+      async function addAgent() {
+        const name = document.getElementById("na-name").value.trim();
+        const hook_type = document.getElementById("na-type").value;
+        try {
+          await api("/agents", {
+            method: "POST",
+            body: JSON.stringify({ name, hook_type }),
+          });
+          document.getElementById("na-name").value = "";
+          msg("na-msg", true, "已接入 " + name);
+          loadAgents();
+        } catch (e) {
+          msg("na-msg", false, e.message);
+        }
+      }
+
+      /* ---- llm / limits ---- */
+      async function loadConfig() {
+        try {
+          const c = await api("/config");
+          document.getElementById("ll-base").value = c.llm.base_url || "";
+          document.getElementById("ll-model").value = c.llm.model || "";
+          document.getElementById("ll-key").placeholder =
+            "已存：" + (c.llm.api_key_masked || "无") + "（留空保留）";
+          document.getElementById("ll-masked").textContent =
+            "当前密钥：" + (c.llm.api_key_masked || "无");
+          document.getElementById("lm-dedup").value = c.limits.dedup_threshold;
+          const cl = c.limits.context_limits || {};
+          for (const k of [
+            "profile",
+            "project",
+            "decision",
+            "task",
+            "incident",
+          ])
+            document.getElementById("lm-" + k).value = cl[k] ?? "";
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      async function saveLlm() {
+        try {
+          const d = await api("/config/llm", {
+            method: "POST",
+            body: JSON.stringify({
+              base_url: document.getElementById("ll-base").value,
+              model: document.getElementById("ll-model").value,
+              api_key: document.getElementById("ll-key").value || null,
+            }),
+          });
+          msg("ll-msg", true, "已保存（" + d.api_key_masked + "）");
+          loadConfig();
+        } catch (e) {
+          msg("ll-msg", false, e.message);
+        }
+      }
+      async function testLlm() {
+        const m = document.getElementById("ll-msg");
+        m.className = "msg";
+        m.textContent = "测试中…";
+        m.style.display = "block";
+        try {
+          const d = await api("/config/llm/test", {
+            method: "POST",
+            body: JSON.stringify({
+              base_url: document.getElementById("ll-base").value,
+              model: document.getElementById("ll-model").value,
+              api_key: document.getElementById("ll-key").value || null,
+            }),
+          });
+          msg(
+            "ll-msg",
+            d.ok,
+            d.ok
+              ? `✅ 连通正常（${d.latency_ms}ms）：${d.reply}`
+              : "❌ " + d.error,
+          );
+        } catch (e) {
+          msg("ll-msg", false, e.message);
+        }
+      }
+      async function saveLimits() {
+        try {
+          const cl = {};
+          for (const k of [
+            "profile",
+            "project",
+            "decision",
+            "task",
+            "incident",
+          ])
+            cl[k] = parseInt(document.getElementById("lm-" + k).value) || 5;
+          await api("/config/limits", {
+            method: "POST",
+            body: JSON.stringify({
+              dedup_threshold: parseFloat(
+                document.getElementById("lm-dedup").value,
+              ),
+              context_limits: cl,
+            }),
+          });
+          msg("lm-msg", true, "已保存");
+        } catch (e) {
+          msg("lm-msg", false, e.message);
+        }
+      }
+
+      /* ---- memories ---- */
+      async function loadMems() {
+        try {
+          const q = new URLSearchParams({
+            q: document.getElementById("mq-q").value,
+            project_id: document.getElementById("mq-project").value,
+            type: document.getElementById("mq-type").value,
+          });
+          const d = await api("/memories?" + q);
+          const box = document.getElementById("mem-list");
+          box.replaceChildren();
+          document.getElementById("mem-msg").className = "msg";
+          if (!d.memories.length) {
+            box.appendChild(el("p", "无匹配记忆", "muted"));
+            return;
+          }
+          for (const m of d.memories) {
+            const div = el("div", "", "mem");
+            const del = el("button", "删除", "del");
+            del.addEventListener("click", () => delMem(m.id));
+            div.appendChild(del);
+            const md = m.metadata || {};
+            div.appendChild(
+              el(
+                "div",
+                `[${md.type || "?"}] ${md.project_id || "global"} · ${md.source_agent || "?"} · ${(m.created_at || "").slice(0, 19)}`,
+                "meta",
+              ),
+            );
+            div.appendChild(el("div", m.text));
+            box.appendChild(div);
+          }
+        } catch (e) {
+          msg("mem-msg", false, e.message);
+        }
+      }
+      async function delMem(id) {
+        if (!confirm("删除这条记忆？")) return;
+        try {
+          await api("/memory/" + id, { method: "DELETE" });
+          loadMems();
+        } catch (e) {
+          msg("mem-msg", false, e.message);
+        }
+      }
+    </script>
+  </body>
+</html>
