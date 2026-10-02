@@ -96,6 +96,7 @@ mem clean --apply                          # 执行合并
 ```
 
 `project_id` 自动从 `git remote get-url origin` 归一化推导（worktree 共享同一项目记忆），
+URL 中的凭证（`user:token@`）与端口会被剥离，ssh / https 形式得到同一个 id；
 无 remote 时回退 `local-<路径哈希>`。
 
 ## 记忆生命周期
@@ -111,16 +112,17 @@ mem clean --apply                          # 执行合并
 
 ## 并行 Agent 的 diff 归属
 
-SessionStart hook 记录会话基线（`started_at`，存于 `~/agent_memory/state/`）；
-SessionEnd 触发 checkpoint 时只统计 **mtime 晚于基线** 的变更文件 —— 其它会话或
-更早遗留的未提交改动不会被算进本次。同时段存在其它 agent 的活跃基线时，metadata
+SessionStart hook 记录会话基线（`started_at`，存于仓库目录下 `state/`）；
+SessionEnd 触发 checkpoint 时只统计 **mtime 晚于基线** 的未提交变更文件 —— 其它会话或
+更早遗留的未提交改动不会被算进本次；会话期间已经 commit 的改动按提交时间
+（晚于基线）单独采集。发给提取 LLM 的 diff 与会话产出会先经过同一套脱敏。同时段存在其它 agent 的活跃基线时，metadata
 标记 `parallel_with`，并在提取提示中要求保守归属。跨目录的真正并行建议用 git
 worktree（每个 worktree 的 diff 天然隔离，`project_id` 相同则共享项目记忆）。
 
 ## 语义整理（consolidation）
 
 `POST /consolidate` 或 `mem clean`：字符二元组 containment（实测近重复对 ≈0.59，
-不同事实 ≤0.05，阈值 0.5）词法聚类找出同类型近似重复记忆 → LLM 逐组判定是否同一
+不同事实 ≤0.05，默认阈值 0.5，可用 `--threshold` 调整）词法聚类找出同类型近似重复记忆 → LLM 逐组判定是否同一
 事实 → 合并为一条新记忆，旧记忆标记 `superseded` 并记录 `superseded_by`。
 默认 dry-run 预览，`--apply` / `dry_run:false` 执行。
 
@@ -133,7 +135,7 @@ worktree（每个 worktree 的 diff 天然隔离，`project_id` 相同则共享�
 | `user_id` | 记忆作用域（所有工具共用） |
 | `llm.base_url` / `llm.model` / `llm.api_key` | checkpoint 提取用的 LLM（OpenAI 兼容） |
 | `agents` | Agent 注册表（Web 台管理） |
-| `dedup_threshold` / `context_limits` | 检索/去重/上下文配额 |
+| `context_limits` | 各类型记忆注入上下文的条数上限（1–50） |
 
 完整字段见 [`config.example.json`](config.example.json)。
 
@@ -145,7 +147,7 @@ worktree（每个 worktree 的 diff 天然隔离，`project_id` 相同则共享�
 | `GET/POST /agents` · `DELETE /agents/{name}` | Agent 注册表管理 |
 | `POST /agents/{name}/wire` · `/unwire` | 接线 / 摘除 hooks |
 | `GET/POST /config/llm` · `POST /config/llm/test` | 提取模型配置与连通测试 |
-| `GET/POST /config/limits` | 去重与上下文配额 |
+| `GET/POST /config/limits` | 上下文配额 |
 | `POST /context` · `POST /search` · `POST /remember` | 记忆核心操作 |
 | `POST /checkpoint` · `GET /memories` | 会话落库 · 记忆浏览 |
 | `DELETE /memory/{id}` · `POST /forget` | 单条/批量删除（批量默认 dry-run） |
@@ -169,6 +171,12 @@ worktree（每个 worktree 的 diff 天然隔离，`project_id` 相同则共享�
 | Bridge 502 | Mem0 侧故障，检查服务端容器与网络后重试 |
 | codex 弹 "Hooks need review" | 一次性信任门，选 Trust all and continue |
 | 记忆写错项目 | 检查 `git remote get-url origin`；或显式 `--project` |
+
+## 开发
+
+```bash
+python3 -m unittest discover tests   # server 相关用例需要 fastapi（.venv 中已安装）
+```
 
 ## License
 

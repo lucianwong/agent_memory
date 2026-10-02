@@ -4,8 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=__HOME__/agent_memory/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765 --app-dir __HOME__/agent_memory/bridge
-WorkingDirectory=__HOME__/agent_memory
+ExecStart=__ROOT__/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765 --app-dir __ROOT__/bridge
+WorkingDirectory=__ROOT__
 Restart=on-failure
 RestartSec=3
 

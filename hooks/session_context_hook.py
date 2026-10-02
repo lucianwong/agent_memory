@@ -8,40 +8,17 @@ stdin: hook JSON（含 cwd 等）；stdout: additionalContext JSON。
 import hashlib
 import json
 import os
-import re
-import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
 
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "lib"))
+from projectid import detect_project_id  # noqa: E402
+
 AGENT = sys.argv[1] if len(sys.argv) > 1 else "cli"
-CONFIG_PATH = os.environ.get(
-    "AGENT_MEMORY_CONFIG",
-    os.path.expanduser("~/agent_memory/config.json"))
-STATE_DIR = os.path.expanduser("~/agent_memory/state")
-
-
-def project_id(path: str) -> str:
-    try:
-        r = subprocess.run(["git", "-C", path, "remote", "get-url", "origin"],
-                           capture_output=True, text=True, timeout=5, check=True)
-        url = r.stdout.strip()
-        if url.startswith("git@"):
-            url = url.split("git@", 1)[1]
-        url = re.sub(r"^(ssh|https?|git)://", "", url)
-        if "://" not in url and ":" in url.split("/", 1)[0]:
-            url = url.replace(":", "/", 1)
-        if url.endswith(".git"):
-            url = url[:-4]
-        return url.strip("/")
-    except Exception:
-        try:
-            r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
-                               capture_output=True, text=True, timeout=5)
-            base = r.stdout.strip() if r.returncode == 0 else path
-        except Exception:
-            base = path
-        return "local-" + hashlib.sha256(base.encode()).hexdigest()[:12]
+CONFIG_PATH = os.environ.get("AGENT_MEMORY_CONFIG", os.path.join(ROOT, "config.json"))
+STATE_DIR = os.path.join(ROOT, "state")
 
 
 def write_state(cwd: str) -> None:
@@ -71,7 +48,7 @@ def main() -> None:
 
     try:
         cfg = json.load(open(CONFIG_PATH))
-        body = json.dumps({"project_id": project_id(cwd)}).encode()
+        body = json.dumps({"project_id": detect_project_id(cwd, timeout=5)[0]}).encode()
         req = urllib.request.Request(
             cfg["bridge_url"].rstrip("/") + "/context", data=body, method="POST",
             headers={"Content-Type": "application/json",

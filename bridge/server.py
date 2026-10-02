@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -16,14 +17,17 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-CONFIG_PATH = os.environ.get(
-    "AGENT_MEMORY_CONFIG",
-    str(Path.home() / "agent_memory" / "config.json"))
-PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "checkpoint.md"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+from projectid import detect_project_id  # noqa: E402
+
+CONFIG_PATH = os.environ.get("AGENT_MEMORY_CONFIG", str(ROOT / "config.json"))
+PROMPT_PATH = ROOT / "prompts" / "checkpoint.md"
+DEFAULT_LIMITS = {"profile": 5, "project": 10, "decision": 10, "task": 5, "incident": 5}
 
 
 def _load_config() -> dict:
@@ -35,13 +39,11 @@ def _load_config() -> dict:
         raise RuntimeError(f"config not found: {path}") from e
     except json.JSONDecodeError as e:
         raise RuntimeError(f"invalid JSON in {path}") from e
-    for key in ("bridge_token", "mem0_base_url", "mem0_api_key", "user_id", "deepseek"):
+    for key in ("bridge_token", "mem0_base_url", "mem0_api_key", "user_id"):
         if key not in cfg:
             raise RuntimeError(f"config missing key: {key}")
-    try:
-        cfg["dedup_threshold"] = float(cfg.get("dedup_threshold", 0.92))
-    except (TypeError, ValueError) as e:
-        raise RuntimeError("dedup_threshold must be a number") from e
+    if "llm" not in cfg and "deepseek" not in cfg:  # deepseek 为旧版键名
+        raise RuntimeError("config missing key: llm")
     if not isinstance(cfg.get("context_limits", {}), dict):
         raise RuntimeError("context_limits must be an object")
     return cfg
@@ -76,9 +78,7 @@ def _migrate_config(cfg: dict) -> dict:
 
 CONFIG = _migrate_config(_load_config())
 TOKEN = CONFIG["bridge_token"]
-LIMITS = CONFIG.get("context_limits", {
-    "profile": 5, "project": 10, "decision": 10, "task": 5, "incident": 5})
-DEDUP_THRESHOLD = CONFIG["dedup_threshold"]
+LIMITS = {**DEFAULT_LIMITS, **CONFIG.get("context_limits", {})}
 DS = CONFIG.get("llm") or CONFIG["deepseek"]
 
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -183,14 +183,6 @@ class Mem0Client:
             n += 1
         return n
 
-    def find_near_duplicate(self, content: str, project_id: str | None,
-                            threshold: float) -> tuple[dict | None, float]:
-        hits = self.search(content, {"project_id": project_id} if project_id else None,
-                           top_k=1)
-        if hits and (hits[0].get("score") or 0) >= threshold:
-            return hits[0], hits[0]["score"]
-        return None, 0.0
-
 
 def _normalize(result: dict | list) -> list[dict]:
     rows = result.get("results") if isinstance(result, dict) else result
@@ -209,7 +201,7 @@ def _normalize(result: dict | list) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 文本工具：脱敏 + project_id 归一化
+# 文本工具：脱敏（project_id 归一化见 lib/projectid.py）
 # ---------------------------------------------------------------------------
 def redact(text: str) -> str:
     """写入共享记忆前的凭证脱敏（与 pi-memory-mem0 privacy 实践对齐并增强）。"""
@@ -231,38 +223,6 @@ def redact(text: str) -> str:
     return text
 
 
-def normalize_remote(url: str) -> str:
-    """git remote URL -> 标准化 repo id，如 github.com/yves/my-project。"""
-    url = url.strip()
-    if url.startswith("git@"):
-        url = url.split("git@", 1)[1]
-    url = re.sub(r"^(ssh|https?|git)://", "", url)
-    if "://" not in url and ":" in url.split("/", 1)[0]:
-        url = url.replace(":", "/", 1)  # scp 风格 host:path
-    url = url.split("#", 1)[0]
-    if url.endswith(".git"):
-        url = url[:-4]
-    return url.strip("/")
-
-
-def detect_project_id(repo_path: str | None) -> tuple[str, str]:
-    """返回 (project_id, origin)。无 remote 时回退 local-<pathhash>。"""
-    cwd = repo_path or "."
-    origin = ""
-    try:
-        r = subprocess.run(["git", "-C", cwd, "remote", "get-url", "origin"],
-                           capture_output=True, text=True, timeout=10, check=True)
-        origin = r.stdout.strip()
-    except (subprocess.SubprocessError, OSError):
-        origin = ""  # 无 remote 或非 git 目录，走本地路径哈希回退
-    if origin:
-        return normalize_remote(origin), origin
-    root = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                          capture_output=True, text=True, timeout=10)
-    base = root.stdout.strip() if root.returncode == 0 else cwd
-    return "local-" + hashlib.sha256(base.encode()).hexdigest()[:12], ""
-
-
 # ---------------------------------------------------------------------------
 # FastAPI 服务
 # ---------------------------------------------------------------------------
@@ -271,10 +231,16 @@ client = Mem0Client(CONFIG["mem0_base_url"], CONFIG["mem0_api_key"], CONFIG["use
 app = FastAPI(title="agent-memory bridge", docs_url=None, redoc_url=None)
 
 
+@app.exception_handler(Mem0Error)
+def _mem0_error(_req: Request, exc: Mem0Error) -> JSONResponse:
+    """Mem0 侧故障统一返回 502（而非 500），便于与 Bridge 自身错误区分。"""
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
 def _auth(authorization: str | None) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token")
-    if not hmac.compare_digest(authorization[7:], TOKEN):
+    if not hmac.compare_digest(authorization[7:].encode(), TOKEN.encode()):
         raise HTTPException(401, "invalid token")
 
 
@@ -344,10 +310,9 @@ def _remember(req: RememberReq) -> dict:
     dedup_filters = {"content_hash": chash, "status": "active"}
     if req.scope == "project" and project_id:
         dedup_filters["project_id"] = project_id
-    if client.search(".", dedup_filters, top_k=1, threshold=0.0):
-        return {"status": "skipped",
-                "id": client.search(".", dedup_filters, top_k=1, threshold=0.0)[0]["id"],
-                "score": 1.0}
+    dup = client.search(".", dedup_filters, top_k=1, threshold=0.0)
+    if dup:
+        return {"status": "skipped", "id": dup[0]["id"], "score": 1.0}
     ids = client.add(content, _meta({
         "content_hash": chash, "status": "active",
         "type": req.type, "scope": req.scope, "project_id": project_id,
@@ -424,27 +389,24 @@ def context(req: ContextReq, authorization: str | None = Header(None)):
     _auth(authorization)
     pid = req.project_id
 
-    def fetch(mtype: str, limit: int, project_scoped: bool) -> list[dict]:
-        """按条件服务端过滤（type/status/project），阈值 0 不做语义筛除。"""
-        base = {"type": mtype, "status": "active"}
-        if project_scoped and pid:
-            rows = client.query_all({**base, "project_id": pid})
-            globals_rows = client.query_all({**base, "scope": "global"})
-            rows += [r for r in globals_rows if not r["metadata"].get("project_id")]
-        elif project_scoped:
-            rows = client.query_all({**base, "scope": "global"})
-        else:
-            rows = client.query_all(base)
+    # 按条件服务端过滤（阈值 0 不做语义筛除），本地按 type 分组：
+    # 共 3 次 Mem0 查询，避免 SessionStart hook（8s 超时）因逐类型查询而超时。
+    def pick(rows: list[dict], mtype: str) -> list[dict]:
+        rows = [r for r in rows if r["metadata"].get("type") == mtype]
         rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-        return rows[:limit]
+        return rows[:LIMITS.get(mtype, DEFAULT_LIMITS[mtype])]
 
     sections = []
     if pid:
-        sections.append(("# Project memory", fetch("project", LIMITS["project"], True)))
-        sections.append(("# Recent decisions", fetch("decision", LIMITS["decision"], True)))
-        sections.append(("# Current tasks", fetch("task", LIMITS["task"], True)))
-        sections.append(("# Known issues", fetch("incident", LIMITS["incident"], True)))
-    sections.append(("# User preferences", fetch("profile", LIMITS["profile"], False)))
+        scoped = client.query_all({"status": "active", "project_id": pid})
+        scoped += [r for r in client.query_all({"status": "active", "scope": "global"})
+                   if not r["metadata"].get("project_id")]
+        sections.append(("# Project memory", pick(scoped, "project")))
+        sections.append(("# Recent decisions", pick(scoped, "decision")))
+        sections.append(("# Current tasks", pick(scoped, "task")))
+        sections.append(("# Known issues", pick(scoped, "incident")))
+    profiles = client.query_all({"type": "profile", "status": "active"})
+    sections.append(("# User preferences", pick(profiles, "profile")))
 
     lines = ["# Shared agent memory (auto-generated)"]
     empty = True
@@ -526,8 +488,11 @@ def checkpoint(req: CheckpointReq, authorization: str | None = Header(None)):
     status = _filtered_status(repo, changed)
     diff_stat = _git(repo, "diff", "HEAD", "--stat", "--", *changed, cap=1500) if changed else ""
     diff = _git(repo, "diff", "HEAD", "--", *changed, cap=12000) if changed else ""
+    # 会话期间已提交的改动不在 diff HEAD 里，按提交时间单独采集
+    commits = _git(repo, "log", f"--since=@{int(since)}", "--stat", "--patch",
+                   "--format=commit %h %s", cap=10000) if since is not None else ""
     output = req.output_text[:16000]
-    if not output.strip() and not diff and not status:
+    if not output.strip() and not diff and not status and not commits:
         return {"project_id": project_id, "branch": branch, "created": [], "skipped": 0,
                 "note": "no diff and no output_text; skipped LLM extraction"}
     parallel_note = (
@@ -535,10 +500,12 @@ def checkpoint(req: CheckpointReq, authorization: str | None = Header(None)):
         "。diff 可能混入其它会话的改动，只提取可明确归属的信息，不要猜测归属。"
     ) if req.parallel_agents else "无"
 
+    # 发往外部 LLM 前先脱敏：diff/会话产出里可能含密钥
     prompt = PROMPT_PATH.read_text().format(
-        project_id=project_id, branch=branch or "?", recent=recent or "(none)",
-        status=status or "(clean)", diff_stat=diff_stat or "(none)",
-        diff=diff or "(no unstaged diff)", output=output or "(none)",
+        project_id=project_id, branch=branch or "?", recent=redact(recent) or "(none)",
+        status=redact(status) or "(clean)", diff_stat=redact(diff_stat) or "(none)",
+        diff=redact(diff) or "(no uncommitted diff)",
+        commits=redact(commits) or "(none)", output=redact(output) or "(none)",
         parallel_note=parallel_note)
 
     try:
@@ -646,7 +613,7 @@ def _wire_json_style(path: Path, agent: str) -> None:
     for event, script, timeout in WIRE_EVENTS:
         arr = hooks.setdefault(event, [])
         cmd = _hook_cmd(script, agent)
-        if any(cmd in m.get("hooks", [{}])[0].get("command", "") for m in arr):
+        if any(cmd in h.get("command", "") for m in arr for h in m.get("hooks", [])):
             continue
         arr.append({"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]})
     _backup(path)
@@ -731,13 +698,9 @@ def _unwire(hook_type: str, agent: str) -> None:
 
 
 def _apply_runtime(cfg: dict) -> None:
-    global CONFIG, LIMITS, DEDUP_THRESHOLD, DS, client
+    global CONFIG, LIMITS, DS, client
     CONFIG = cfg
-    LIMITS = cfg.get("context_limits", LIMITS)
-    try:
-        DEDUP_THRESHOLD = float(cfg.get("dedup_threshold") or 0.92)
-    except (TypeError, ValueError) as e:
-        raise RuntimeError("dedup_threshold must be a number") from e
+    LIMITS = {**DEFAULT_LIMITS, **cfg.get("context_limits", {})}
     DS = cfg.get("llm") or cfg.get("deepseek", DS)
     client = Mem0Client(cfg["mem0_base_url"], cfg["mem0_api_key"], cfg["user_id"])
 
@@ -842,7 +805,7 @@ def get_config(authorization: str | None = Header(None)):
         "mem0_base_url": CONFIG["mem0_base_url"],
         "llm": {"base_url": llm.get("base_url"), "model": llm.get("model"),
                 "api_key_masked": _mask(llm.get("api_key", ""))},
-        "limits": {"dedup_threshold": DEDUP_THRESHOLD, "context_limits": LIMITS},
+        "limits": {"context_limits": LIMITS},
         "agents": CONFIG.get("agents", {}),
     }
 
@@ -893,21 +856,21 @@ def test_llm(req: LlmReq | None = None, authorization: str | None = Header(None)
 
 
 class LimitsReq(BaseModel):
-    dedup_threshold: float | None = Field(default=None, ge=0.5, le=1.0)
-    context_limits: dict | None = None
+    context_limits: dict[str, int] | None = None
 
 
 @app.post("/config/limits")
 def set_limits(req: LimitsReq, authorization: str | None = Header(None)):
     _auth(authorization)
-    if req.dedup_threshold is not None:
-        CONFIG["dedup_threshold"] = req.dedup_threshold
     if req.context_limits:
-        CONFIG["context_limits"] = req.context_limits
+        bad = [k for k, v in req.context_limits.items()
+               if k not in DEFAULT_LIMITS or not 1 <= v <= 50]
+        if bad:
+            raise HTTPException(400, f"invalid context_limits keys/values: {bad}")
+        CONFIG["context_limits"] = {**LIMITS, **req.context_limits}
     _save_config(CONFIG)
     _apply_runtime(CONFIG)
-    return {"ok": True, "limits": {"dedup_threshold": DEDUP_THRESHOLD,
-                                   "context_limits": LIMITS}}
+    return {"ok": True, "limits": {"context_limits": LIMITS}}
 
 
 @app.get("/memories")
@@ -979,7 +942,7 @@ def backfill_status(authorization: str | None = Header(None)):
 
 class ConsolidateReq(BaseModel):
     project_id: str | None = None
-    threshold: float = Field(default=0.78, ge=0.5, le=0.99)
+    threshold: float = Field(default=0.5, ge=0.3, le=0.99)
     dry_run: bool = True
     max_groups: int = Field(default=10, ge=1, le=50)
     scan: int = Field(default=80, ge=10, le=300)
@@ -1020,7 +983,7 @@ def consolidate(req: ConsolidateReq, authorization: str | None = Header(None)):
                 continue
             # containment 对中文改写句稳健：实测近重复对 ≈0.59，不同事实 ≤0.05
             contain = len(a & b) / min(len(a), len(b))
-            if contain >= 0.5 and by_id[ids[i]]["metadata"].get("type") == \
+            if contain >= req.threshold and by_id[ids[i]]["metadata"].get("type") == \
                     by_id[ids[j]]["metadata"].get("type"):
                 ra, rb = find(ids[i]), find(ids[j])
                 if ra != rb:
@@ -1057,13 +1020,21 @@ def consolidate(req: ConsolidateReq, authorization: str | None = Header(None)):
             m["consolidated"] = True
             m["status"] = "active"
             m["content_hash"] = hashlib.sha256(merged_text.encode()).hexdigest()
-            new_ids = client.add(merged_text, m)
+            try:
+                new_ids = client.add(merged_text, m)
+            except Mem0Error as e:
+                prop["error"] = str(e)[:120]
+                continue
             if new_ids:
-                for x in g:
-                    client.update_metadata(x["id"], {"status": "superseded",
-                                                     "superseded_by": new_ids[0]})
-                applied.append({"new_id": new_ids[0],
-                                "superseded": [x["id"] for x in g],
-                                "merged": prop["merged"]})
+                done, failed = [], []
+                for x in g:  # 单条失败不中断整组，失败 id 回报给调用方
+                    try:
+                        client.update_metadata(x["id"], {"status": "superseded",
+                                                         "superseded_by": new_ids[0]})
+                        done.append(x["id"])
+                    except Mem0Error:
+                        failed.append(x["id"])
+                applied.append({"new_id": new_ids[0], "superseded": done,
+                                "failed": failed, "merged": prop["merged"]})
     return {"scanned": len(act), "groups_found": len(cands), "proposals": proposals,
             "applied": applied, "dry_run": req.dry_run}

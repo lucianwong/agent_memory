@@ -2,22 +2,21 @@
 """mem — agent-memory 极简 CLI（ctx / s / add / cp / rm / clean）。
 
 仅依赖标准库；与 Bridge (127.0.0.1:8765) 通信。
-旧命令名（context/search/remember/checkpoint/forget/forget-batch）仍可用。
+旧命令名（context/search/remember/checkpoint/forget/consolidate）仍可用。
 """
 import argparse
-import hashlib
 import json
 import os
-import re
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-CONFIG_PATH = os.environ.get(
-    "AGENT_MEMORY_CONFIG",
-    str(Path.home() / "agent_memory" / "config.json"))
+ROOT = Path(os.path.realpath(__file__)).parent.parent  # 经 ~/.local/bin 软链调用也能定位
+sys.path.insert(0, str(ROOT / "lib"))
+from projectid import detect_project_id  # noqa: E402
+
+CONFIG_PATH = os.environ.get("AGENT_MEMORY_CONFIG", str(ROOT / "config.json"))
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 TYPES = ["profile", "project", "decision", "task", "incident"]
@@ -26,9 +25,12 @@ TYPES = ["profile", "project", "decision", "task", "incident"]
 def load_config() -> dict:
     try:
         with open(CONFIG_PATH) as f:
-            return json.load(f)
+            cfg = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         sys.exit(f"config error ({CONFIG_PATH}): {e}")
+    if not cfg.get("bridge_token", "").isascii():
+        sys.exit(f"config error ({CONFIG_PATH}): bridge_token 仍是占位符，请填写")
+    return cfg
 
 
 def api(cfg: dict, method: str, path: str, body: dict | None = None,
@@ -49,24 +51,7 @@ def api(cfg: dict, method: str, path: str, body: dict | None = None,
 
 def project_id_for(path: str | None) -> str:
     cwd = os.path.abspath(os.path.expanduser(path or os.getcwd()))
-    try:
-        r = subprocess.run(["git", "-C", cwd, "remote", "get-url", "origin"],
-                           capture_output=True, text=True, timeout=10, check=True)
-        url = r.stdout.strip()
-        if url.startswith("git@"):
-            url = url.split("git@", 1)[1]
-        url = re.sub(r"^(ssh|https?|git)://", "", url)
-        if "://" not in url and ":" in url.split("/", 1)[0]:
-            url = url.replace(":", "/", 1)
-        if url.endswith(".git"):
-            url = url[:-4]
-        return url.strip("/")
-    except (subprocess.SubprocessError, OSError):
-        pass
-    root = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                          capture_output=True, text=True, timeout=10)
-    base = root.stdout.strip() if root.returncode == 0 else cwd
-    return "local-" + hashlib.sha256(base.encode()).hexdigest()[:12]
+    return detect_project_id(cwd)[0]
 
 
 def add_type_arg(sp):
@@ -112,10 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("rm", aliases=["forget"], help="删除一条记忆")
     sp.add_argument("memory_id")
 
-    sp = sub.add_parser("clean", aliases=["forget-batch", "consolidate"],
+    sp = sub.add_parser("clean", aliases=["consolidate"],
                         help="语义整理：合并重复记忆（默认预览）")
     sp.add_argument("--project")
-    sp.add_argument("--threshold", type=float, default=0.78)
+    sp.add_argument("--threshold", type=float, default=0.5,
+                    help="字符二元组 containment 聚类阈值")
     sp.add_argument("--max-groups", type=int, default=10)
     sp.add_argument("--scan", type=int, default=80)
     sp.add_argument("--apply", action="store_true", help="默认预览，加此参数才执行合并")
@@ -184,12 +170,13 @@ def main() -> None:
         print(f"scanned={out['scanned']} groups={out['groups_found']} [{mode}]")
         for p in out["proposals"]:
             if "error" in p:
-                print(f"  ! 提取失败: {p['error']}")
+                print(f"  ! 失败: {p['error']}")
                 continue
             print(f"  ↳ 合并 {len(p['ids'])} 条 → “{p['merged']}”  ({p['reason']})")
         if out.get("applied"):
             for a in out["applied"]:
-                print(f"  ✓ new={a['new_id']} superseded={len(a['superseded'])} 条")
+                fail = f" 失败={len(a['failed'])} 条" if a.get("failed") else ""
+                print(f"  ✓ new={a['new_id']} superseded={len(a['superseded'])} 条{fail}")
 
 
 if __name__ == "__main__":
