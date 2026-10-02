@@ -10,7 +10,7 @@ MODE="${1:-}"
 
 echo "==> 1/4 创建虚拟环境并安装依赖"
 python3 -m venv .venv
-./.venv/bin/pip install --quiet --disable-pip-version-check fastapi uvicorn httpx
+./.venv/bin/pip install --quiet --disable-pip-version-check -r requirements.txt
 
 echo "==> 2/4 初始化配置"
 if [ ! -f config.json ]; then
@@ -22,8 +22,8 @@ else
 fi
 
 echo "==> 3/4 CLI 与 hooks"
-chmod +x cli/memory hooks/*.py
-mkdir -p ~/.local/bin logs
+chmod +x cli/mem hooks/*.py
+mkdir -p ~/.local/bin logs state
 ln -sf "$(pwd)/cli/mem" ~/.local/bin/mem
 ln -sf "$(pwd)/cli/mem" ~/.local/bin/memory
 case ":$PATH:" in
@@ -41,7 +41,7 @@ case "$MODE" in
 		echo "launchd 仅限 macOS"
 		exit 1
 	}
-	sed "s|__HOME__|$HOME|g" deploy/launchd.dev.agent-memory.bridge.plist.tmpl \
+	sed "s|__ROOT__|$PWD|g" deploy/launchd.dev.agent-memory.bridge.plist.tmpl \
 		>~/Library/LaunchAgents/dev.agent-memory.bridge.plist
 	launchctl bootout gui/$(id -u)/dev.agent-memory.bridge 2>/dev/null || true
 	launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.agent-memory.bridge.plist
@@ -53,7 +53,7 @@ case "$MODE" in
 		exit 1
 	}
 	mkdir -p ~/.config/systemd/user
-	sed "s|__HOME__|$HOME|g" deploy/agent-memory-bridge.service.tmpl \
+	sed "s|__ROOT__|$PWD|g" deploy/agent-memory-bridge.service.tmpl \
 		>~/.config/systemd/user/agent-memory-bridge.service
 	systemctl --user daemon-reload
 	systemctl --user enable --now agent-memory-bridge.service

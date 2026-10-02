@@ -15,10 +15,11 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 AGENT = sys.argv[1] if len(sys.argv) > 1 else "cli"
-MEMORY_CLI = os.path.expanduser("~/.local/bin/mem")
-STATE_DIR = os.path.expanduser("~/agent_memory/state")
-LOG = os.path.expanduser("~/agent_memory/logs/hooks.log")
+MEMORY_CLI = os.path.join(ROOT, "cli", "mem")
+STATE_DIR = os.path.join(ROOT, "state")
+LOG = os.path.join(ROOT, "logs", "hooks.log")
 FRESH_SECONDS = 12 * 3600  # 基线超过 12h 视为陈旧残留，不参与并行检测
 
 
@@ -123,7 +124,7 @@ def main() -> None:
             fd, tmpf = tempfile.mkstemp(prefix="mem-out-", suffix=".txt")
             os.write(fd, output_text.encode())
             os.close(fd)
-        cmd = [MEMORY_CLI, "cp", "--repo", cwd, "--agent", AGENT]
+        cmd = [sys.executable, MEMORY_CLI, "cp", "--repo", cwd, "--agent", AGENT]
         if started_at:
             cmd += ["--started-at", started_at]
         if parallel:
@@ -131,6 +132,7 @@ def main() -> None:
         if tmpf:
             cmd += ["--output-file", tmpf]
         env = dict(os.environ, AGENT_NAME=AGENT)
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with open(LOG, "a") as logf:
             subprocess.Popen(
                 cmd, stdout=logf, stderr=subprocess.STDOUT,

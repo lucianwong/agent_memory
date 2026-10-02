@@ -712,8 +712,9 @@ AGENT_NAME=codex <b>memory remember</b> <span class="g">"..."</span>          <s
 
 <span class="c"># ⑤ 修正记忆</span>
 <b>memory forget</b> 4bb45fcf-c5f3-4f75-860f-0dbebe8c2c07
-<b>memory forget-batch</b> --project github.com/yves/myapp              <span class="c"># dry-run 预览</span>
-<b>memory forget-batch</b> --project github.com/yves/myapp --execute    <span class="c"># 真删</span></pre>
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"project_id":"github.com/yves/myapp"}' http://127.0.0.1:8765/forget                 <span class="c"># 批量删除 dry-run 预览</span>
+<span class="c">#   body 加 "dry_run": false 才真删</span></pre>
       </div>
 
       <div class="callout">
@@ -902,7 +903,8 @@ curl --noproxy '*' http://127.0.0.1:8765/health</pre>
           <h3 style="margin-top: 0">文件布局</h3>
           <pre>~/agent_memory/
 ├── bridge/server.py    <span class="c"># 单文件服务</span>
-├── cli/memory          <span class="c"># CLI（软链到 ~/.local/bin）</span>
+├── cli/mem             <span class="c"># CLI（软链到 ~/.local/bin）</span>
+├── lib/projectid.py    <span class="c"># project_id 推导（Bridge/CLI/hooks 共用）</span>
 ├── prompts/checkpoint.md
 ├── config.json         <span class="c"># 0600，含全部密钥</span>
 └── logs/</pre>
@@ -996,8 +998,8 @@ curl --noproxy '*' http://127.0.0.1:8765/health</pre>
           <tr>
             <td>疑似记忆被污染</td>
             <td>
-              <code>memory forget-batch --project X</code> 先 dry-run 核对 id
-              列表，确认后 <code>--execute</code>
+              <code>POST /forget {"project_id": "X"}</code> 先 dry-run 核对 id
+              列表，确认后加 <code>"dry_run": false</code>
             </td>
           </tr>
           <tr>

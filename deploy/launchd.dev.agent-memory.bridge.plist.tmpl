@@ -6,22 +6,22 @@
     <string>dev.agent-memory.bridge</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__HOME__/agent_memory/.venv/bin/uvicorn</string>
+        <string>__ROOT__/.venv/bin/uvicorn</string>
         <string>server:app</string>
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>
         <string>8765</string>
         <string>--app-dir</string>
-        <string>__HOME__/agent_memory/bridge</string>
+        <string>__ROOT__/bridge</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>__HOME__/agent_memory/logs/bridge.out.log</string>
+    <string>__ROOT__/logs/bridge.out.log</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/agent_memory/logs/bridge.err.log</string>
+    <string>__ROOT__/logs/bridge.err.log</string>
 </dict>
 </plist>
